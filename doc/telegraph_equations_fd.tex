@@ -106,10 +106,11 @@ Where Dv and Di are the same derivative matrix multiplied by different terms -1/
 
 Gv and Ri are identity matrix scale by either -G/C and -R/L.
 
-For Dv the multiplier value will be $\frac{\Delta t}{L h}$.
+For Dv the multiplier value will be $\frac{\Delta t}{L h}$.\\
 
 Using the above operator we will step in time using RK4.
 
+In principle it produce something like this...
 
 
 \begin{equation}
@@ -166,7 +167,51 @@ The signal injected is  gaussian pulse centered at 100ns with a Tau of 20ns mult
 	\label{fig:example}
 \end{figure}
 
-next step is the time step...
+The software do not work fine; I cant find any error. the next step...
+\begin{itemize}
+	\item rewrite the software in python or octave.
+\end{itemize}
 
+\includegraphics{python-with-zero.png}
 
+ChatGPT:
+the resulting signal appear to be with a zero on all odd nodes.
+	
+	
+	ChatGPT said:
+	Yes, if the resulting signal shows zeros on all odd nodes (e.g., nodes 1, 3, 5, ...), it's a strong hint that there’s a structural symmetry or a bug in the way your system is discretized — particularly in how the derivative matrices Di and Dv are built.\\
+	
+The solution according to chatgpt is to have nbrSeg+1 voltage nodes and nbrSeg current in between voltage nodes. So the block matrix will be like this:
+
+\begin{equation}
+	\begin{bmatrix}
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} 
+	\end{bmatrix}	
+	=
+	\begin{bmatrix}
+		Gv Di \\
+		Dv Ri
+	\end{bmatrix}
+	\begin{bmatrix}
+		V^k \\
+		I^k \\
+	\end{bmatrix}
+\end{equation}
+
+Gv dimensions will be nbrSeg+1 by nbrSeg+1.\\
+Di dimensions will be nbrSeg+1 by nbrSeg.\\
+Dv dimensions will be nbrSeg by nbrSeg+1.\\
+Ri dimensions will be nbrSeg by nbrSeg.\\
+
+So the block matrix dimensions are 2 nbrSeg+1 by 2 nbrSeg+1.
+
+\begin{equation}
+	\begin{bmatrix}
+		N+1, N+1 &  N+1, N \\
+		N, N+1 & N, N
+	\end{bmatrix}
+\end{equation}
+
+	
 \end{document}
