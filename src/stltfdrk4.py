@@ -24,13 +24,12 @@ lenght = 100 #100 metre.
 nbrSeg = 1000  #number of segment.
 h = lenght/nbrSeg
 deltaT = 0.01e-9
-endTime = 200e-9
+endTime = 500e-9
 Time = 0.0
 
  
 # generate a time dependent signal
 def SourceFunction(t):
-      #return 1.0
       # gaussian pulse of tw wide centered at tc.*/
       tw = 20e-9
       tc = 50e-9
@@ -79,34 +78,64 @@ def create_Gv_matrix(nbrSeg, G, C):
     return Gv.tocsr()
 
 
+def createBlockMatrix(nbrSeg, smGv, smDi, smDv, smRi):
+    
+    # Initialize fdBlockOperator (a sparse matrix of size 2*(nbrSeg+1) x 2*(nbrSeg+1))
+    BM = lil_matrix((2 * nbrSeg + 1, 2 * nbrSeg + 1))
+
+    # Insert each block into fdBlockOperator
+    BM[:nbrSeg+1, :nbrSeg+1] = smGv 
+    BM[:nbrSeg+1, nbrSeg+1:] = smDi
+    BM[nbrSeg+1:, :nbrSeg+1] = smDv
+    BM[nbrSeg+1:, nbrSeg+1:] = smRi
+
+    #Print BM as a Matlab format matrix
+    sio.savemat('BM.txt', {'BM': BM.toarray()})
+
+    return BM.tocsr()
+   
 
 Di = create_Di_matrix(nbrSeg, C, h)
 Dv = create_Dv_matrix(nbrSeg, L, h)
 Ri = create_Ri_matrix(nbrSeg, R, L)
 Gv = create_Gv_matrix(nbrSeg, G, C)
+BM = createBlockMatrix(nbrSeg, Gv, Di, Dv, Ri)
 
-Vx = np.zeros((nbrSeg+1, 1))
-Ix = np.zeros((nbrSeg, 1))
+x = np.zeros((2*nbrSeg+1, 1))
 
-
-
-plotTime = endTime/5
+plotTime = endTime/20
 plotCount = 0
 
+
+
 while(Time<endTime):
-    Vx[0, 0]= SourceFunction(Time)
+    
+    x[0, 0]= SourceFunction(Time)
 
-    dvdt1 = Gv @ Vx + Di @ Ix
-    didt1 = Dv @ Vx + Ri @ Ix
+    # Implementing the 4th order Runge-Kutta step here
+    k1 = BM @ x
+    k2 = BM @ ((deltaT/2) * k1 + x)
+    k3 = BM @ ((deltaT/2) * k2 + x)
+    k4 = BM @ (deltaT * k3 + x)
 
-    Vx = Vx + deltaT * dvdt1
-    Ix = Ix + deltaT * didt1
+    # Final update for x
+    x = x + deltaT * (k1 + 2 * k2 + 2 * k3 + k4) / 6.0
 
     if Time > plotTime * plotCount:
-        plt.figure(2*plotCount+1)
-        plt.plot(Vx)
-        plt.figure(2*plotCount+2)
-        plt.plot(Ix)
+        print(Time)
+
+        #plot voltage    
+        val=x[:nbrSeg+1]
+        d = np.linspace(0, lenght, len(val)) 
+        plt.figure(1)
+        plt.plot(d, val)
+
+        #plot current
+        val=x[nbrSeg+1:]
+        d = np.linspace(0, lenght, len(val)) 
+        plt.figure(2)
+        plt.plot(d, val)
+
         plotCount = plotCount + 1
 
 
