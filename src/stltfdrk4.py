@@ -6,7 +6,7 @@ This is a temporary script file.
 """
 
 import numpy as np
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, hstack, vstack
 from scipy.sparse import lil_matrix
 import scipy.io as sio
 import matplotlib.pyplot as plt
@@ -20,13 +20,19 @@ C = 100.0e-12 # Capacitance per unit length
 R = 220e-3  # Resistance per unit length
 G = 1.0e-9  # Conductance per unit length
 
+Rs = 50
+
 lenght = 100 #100 metre.
 nbrSeg = 1000  #number of segment.
 h = lenght/nbrSeg
 deltaT = 0.01e-9
-endTime = 500e-9
+endTime = 1500e-9
 Time = 0.0
 
+def PrintCSR(A, filename):
+    with open(filename, "w") as f:
+       for i, j in zip(*A.nonzero()):
+          f.write(f"({i}, {j})\t{A[i, j]}\n")
  
 # generate a time dependent signal
 def SourceFunction(t):
@@ -45,15 +51,22 @@ def create_Dv_matrix(nbrSeg, L, h):
     for i in range(nrow):
         Dv[i, i] = -1 / (L * h)
         Dv[i, i + 1] = 1 / (L * h)
+    
+    PrintCSR(Dv.tocsr(), "out/dv.txt")
     return Dv.tocsr()
 
 def create_Di_matrix(nbrSeg, C, h):
     nrow = nbrSeg + 1
     ncol = nbrSeg
     Di = lil_matrix((nrow, ncol))
-    for i in range(1, nrow - 1):
+    for i in range(0, nrow - 1):
         Di[i, i] = 1 / (C * h)
-        Di[i, i - 1] = -1 / (C * h)
+        if i >= 0:
+           Di[i, i - 1] = -1 / (C * h)
+
+    #we should complete the last row which compute the last node voltage Vx.
+    
+    PrintCSR(Di.tocsr(), "out/di.txt")
     return Di.tocsr()
 
 
@@ -77,7 +90,6 @@ def create_Gv_matrix(nbrSeg, G, C):
         
     return Gv.tocsr()
 
-
 def createBlockMatrix(nbrSeg, smGv, smDi, smDv, smRi):
     
     # Initialize fdBlockOperator (a sparse matrix of size 2*(nbrSeg+1) x 2*(nbrSeg+1))
@@ -93,18 +105,24 @@ def createBlockMatrix(nbrSeg, smGv, smDi, smDv, smRi):
     sio.savemat('BM.txt', {'BM': BM.toarray()})
 
     return BM.tocsr()
-   
 
 Di = create_Di_matrix(nbrSeg, C, h)
 Dv = create_Dv_matrix(nbrSeg, L, h)
 Ri = create_Ri_matrix(nbrSeg, R, L)
 Gv = create_Gv_matrix(nbrSeg, G, C)
-BM = createBlockMatrix(nbrSeg, Gv, Di, Dv, Ri)
+BM1 = createBlockMatrix(nbrSeg, Gv, Di, Dv, Ri)
+SM = create_Source_matrix(2*nbrSeg+2, Rs, C, h)
+oneCol = csr_matrix((2*nbrSeg+1, 1))
+BM2 = hstack( [oneCol, BM1])
+BM2[0, 0] = 1/(C*h*Rs)
+BM2[0, 1] = BM2[0, 1] - 1/(C*h*Rs)
+oneRow = csr_matrix((1, 2*nbrSeg+2))
+BM3 = vstack([oneRow, BM2])
 
-x = np.zeros((2*nbrSeg+1, 1))
+x = np.zeros((2*nbrSeg+2, 1))
 
-plotTime = endTime/20
-plotCount = 0
+plotTime = endTime/15
+plotCount = 1
 
 
 
@@ -113,10 +131,10 @@ while(Time<endTime):
     x[0, 0]= SourceFunction(Time)
 
     # Implementing the 4th order Runge-Kutta step here
-    k1 = BM @ x
-    k2 = BM @ ((deltaT/2) * k1 + x)
-    k3 = BM @ ((deltaT/2) * k2 + x)
-    k4 = BM @ (deltaT * k3 + x)
+    k1 = BM3 @ x
+    k2 = BM3 @ ((deltaT/2) * k1 + x)
+    k3 = BM3 @ ((deltaT/2) * k2 + x)
+    k4 = BM3 @ (deltaT * k3 + x)
 
     # Final update for x
     x = x + deltaT * (k1 + 2 * k2 + 2 * k3 + k4) / 6.0
@@ -125,21 +143,13 @@ while(Time<endTime):
         print(Time)
 
         #plot voltage    
-        val=x[:nbrSeg+1]
+        val=x[1:nbrSeg+2]
         d = np.linspace(0, lenght, len(val)) 
-        plt.figure(1)
+        plt.figure(plotCount)
         plt.plot(d, val)
-
-        #plot current
-        val=x[nbrSeg+1:]
-        d = np.linspace(0, lenght, len(val)) 
-        plt.figure(2)
-        plt.plot(d, val)
-
+        plt.grid()
         plotCount = plotCount + 1
-
-
-#   x = Step(x, Time, deltaT)
+    
     Time = Time + deltaT
 
 plt.show()

@@ -213,5 +213,49 @@ So the block matrix dimensions are 2 nbrSeg+1 by 2 nbrSeg+1.
 	\end{bmatrix}
 \end{equation}
 
+The following figure shows the pulse propagating along a 100m RG-58 transmission line.
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=0.8\textwidth]{pulse-python.png} % Adjust width as needed
+	\caption{Test pulse propagating}
+	\label{fig:example}
+\end{figure}
+
+The simulation works fine using Euler Forward difference to differentiate v(x) and I(x) against x and Runge Kutta 4 for time stepping.\\
+
+The reflected voltage is inverted, this looks like the end of the transmission line is shorted, this is the case because the last row is all zero, so di/dx cannot be ... THAT WILL BE TO COMPLETE.\\
+
+To add the source with a serie resistor we should write the equation for $\frac{\partial{V_0}}{\partial{t}}$ which one will repalace the first row equations. The equation is the same as equation 4 with added current from Rs.
+
+
+
+\begin{equation} \frac{\partial{V_0}}{\partial{t}} = -\frac{G V_0}{C} - \frac{1}{C} \frac{\partial{I}}{\partial{x}} + \frac{Vs}{Rs C} - \frac{V_0}{Rs C}
+\end{equation}
+
+
+\begin{equation}
+	\begin{bmatrix}
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} 
+	\end{bmatrix}	
+	=
+	\begin{bmatrix}
+		0 & Gv & Di \\
+		0 & Dv & Ri \\
+	\end{bmatrix}
+	+
+		\begin{bmatrix}
+		\frac{1}{Rs C} & \frac{-1}{Rs C} & 0 \\
+		0 & 0 & 0 \\
+	\end{bmatrix}
+	\begin{bmatrix}
+		Vs \\
+		V^k \\
+		I^k \\
+	\end{bmatrix}
+\end{equation}
+
+
 	
 \end{document}
