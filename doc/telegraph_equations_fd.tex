@@ -230,25 +230,94 @@ To add the source with a serie resistor we should write the equation for $\frac{
 
 
 
-\begin{equation} \frac{\partial{V_0}}{\partial{t}} = -\frac{G V_0}{C} - \frac{1}{C} \frac{\partial{I}}{\partial{x}} + \frac{Vs}{Rs C} - \frac{V_0}{Rs C}
+\begin{equation} \frac{\partial{V_0}}{\partial{t}} = -\frac{G V_0}{C} - \frac{1}{C} \frac{\partial{I}}{\partial{x}} + \frac{Vs}{Rs C h} - \frac{V_0}{Rs C h}
 \end{equation}
+
+The block matrix take care of the transmission line and the following code lines take care of the left and right boundary conditions.
+
+\begin{verbatim}
+
+#apply the left boundary condition which is a voltage source with Rs in séries.
+x[0, 0] = x[0, 0] + deltaT*(SourceFunction(Time) - x[0, 0])/(Rs*C*h)
+
+#apply the right boundary condition whichis a load Rl.
+x[nbrSeg, 0] = x[nbrSeg, 0] - deltaT*x[nbrSeg, 0]/(Rl*C*h)
+\end{verbatim}
+
+But this method makes the RK4 not applied to the boundary. So the best way would be to include the boundary conditions within the block matrix.\\
+
+This done by adding a voltage node Vs, a row to compute Vs.
+
+\begin{itemize}
+	\item the first row is to compute Vs which stay the same, so it shall be 1.0 follow by all 0.0.
+	\item the second row is 1/(Rs C h) -1/(Rs C h) 0 0 ... 0.
+	\item the last sub matrix is all 0.0.
+\end{itemize}
+
+The resulting matrix equation is ...
 
 
 \begin{equation}
 	\begin{bmatrix}
+		Vs \\
 		\frac{\partial{V}}{\partial{t}} \\
 		\frac{\partial{I}}{\partial{t}} 
 	\end{bmatrix}	
 	=
+	\left[ 
 	\begin{bmatrix}
+		0 & 0 & 0 \\
 		0 & Gv & Di \\
 		0 & Dv & Ri \\
 	\end{bmatrix}
 	+
 		\begin{bmatrix}
+		1 & 0 & 0 \\
 		\frac{1}{Rs C} & \frac{-1}{Rs C} & 0 \\
 		0 & 0 & 0 \\
 	\end{bmatrix}
+	\right]
+	\begin{bmatrix}
+		Vs \\
+		V^k \\
+		I^k \\
+	\end{bmatrix}
+\end{equation}
+
+Now we need to add the right boundary which is a load Rl. the last voltage node will get influenced by Rl, the equation becomes ...
+
+\begin{equation} \frac{\partial{V_N}}{\partial{t}} = -\frac{G V_N}{C} - \frac{1}{C} \frac{\partial{I}}{\partial{x}} - \frac{V_N}{Rl C h}
+\end{equation}
+
+The resulting matrix equation is ...
+
+
+\begin{equation}
+	\begin{bmatrix}
+		Vs \\
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} 
+	\end{bmatrix}	
+	=
+	\left[ 
+	\begin{bmatrix}
+		0 & 0 & 0 \\
+		0 & Gv & Di \\
+		0 & Dv & Ri \\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+		1 & 0 & 0 \\
+		\frac{1}{Rs C h} & \frac{-1}{Rs C h} & 0 \\
+		0 & 0 & 0 \\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+		0 & 0 & 0 \\
+		0 & \frac{-1}{Rs C h} & 0 \\
+		0 & 0 & 0 \\
+	\end{bmatrix}
+	\right]
 	\begin{bmatrix}
 		Vs \\
 		V^k \\

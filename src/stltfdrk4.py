@@ -21,6 +21,7 @@ R = 220e-3  # Resistance per unit length
 G = 1.0e-9  # Conductance per unit length
 
 Rs = 50
+Rl = 100
 
 lenght = 100 #100 metre.
 nbrSeg = 1000  #number of segment.
@@ -55,17 +56,21 @@ def create_Dv_matrix(nbrSeg, L, h):
     PrintCSR(Dv.tocsr(), "out/dv.txt")
     return Dv.tocsr()
 
+'''
+   the Di matrix does not include the boundary conditions (the two if)
+   applied on the left and right side, they will have to be condidered
+   in the loop stepping in time.
+'''
 def create_Di_matrix(nbrSeg, C, h):
     nrow = nbrSeg + 1
     ncol = nbrSeg
     Di = lil_matrix((nrow, ncol))
-    for i in range(0, nrow - 1):
-        Di[i, i] = 1 / (C * h)
-        if i >= 0:
-           Di[i, i - 1] = -1 / (C * h)
-
-    #we should complete the last row which compute the last node voltage Vx.
-    
+    for i in range(0, nrow):
+        if i < ncol:
+            Di[i, i] = 1 / (C * h)
+        if i > 0:
+            Di[i, i - 1] = -1 / (C * h)
+   
     PrintCSR(Di.tocsr(), "out/di.txt")
     return Di.tocsr()
 
@@ -95,7 +100,7 @@ def createBlockMatrix(nbrSeg, smGv, smDi, smDv, smRi):
     # Initialize fdBlockOperator (a sparse matrix of size 2*(nbrSeg+1) x 2*(nbrSeg+1))
     BM = lil_matrix((2 * nbrSeg + 1, 2 * nbrSeg + 1))
 
-    # Insert each block into fdBlockOperator
+    # Insert each block into Block Matrix
     BM[:nbrSeg+1, :nbrSeg+1] = smGv 
     BM[:nbrSeg+1, nbrSeg+1:] = smDi
     BM[nbrSeg+1:, :nbrSeg+1] = smDv
@@ -110,42 +115,39 @@ Di = create_Di_matrix(nbrSeg, C, h)
 Dv = create_Dv_matrix(nbrSeg, L, h)
 Ri = create_Ri_matrix(nbrSeg, R, L)
 Gv = create_Gv_matrix(nbrSeg, G, C)
-BM1 = createBlockMatrix(nbrSeg, Gv, Di, Dv, Ri)
-SM = create_Source_matrix(2*nbrSeg+2, Rs, C, h)
-oneCol = csr_matrix((2*nbrSeg+1, 1))
-BM2 = hstack( [oneCol, BM1])
-BM2[0, 0] = 1/(C*h*Rs)
-BM2[0, 1] = BM2[0, 1] - 1/(C*h*Rs)
-oneRow = csr_matrix((1, 2*nbrSeg+2))
-BM3 = vstack([oneRow, BM2])
+BM = createBlockMatrix(nbrSeg, Gv, Di, Dv, Ri)
 
-x = np.zeros((2*nbrSeg+2, 1))
+x = np.zeros((2*nbrSeg+1, 1))
 
-plotTime = endTime/15
+nbrPlot=15
+plotTime = endTime/nbrPlot
 plotCount = 1
-
-
+plt.figure(1)
 
 while(Time<endTime):
     
-    x[0, 0]= SourceFunction(Time)
+    #apply the left boundary condition which is a voltage source with Rs in séries.
+    x[0, 0] = x[0, 0] + deltaT*(SourceFunction(Time) - x[0, 0])/(Rs*C*h)
+
+    #apply the right boundary condition whichis a load Rl.
+    x[nbrSeg, 0] = x[nbrSeg, 0] - deltaT*x[nbrSeg, 0]/(Rl*C*h)
 
     # Implementing the 4th order Runge-Kutta step here
-    k1 = BM3 @ x
-    k2 = BM3 @ ((deltaT/2) * k1 + x)
-    k3 = BM3 @ ((deltaT/2) * k2 + x)
-    k4 = BM3 @ (deltaT * k3 + x)
+    k1 = BM @ x
+    k2 = BM @ ((deltaT/2) * k1 + x)
+    k3 = BM @ ((deltaT/2) * k2 + x)
+    k4 = BM @ (deltaT * k3 + x)
 
     # Final update for x
     x = x + deltaT * (k1 + 2 * k2 + 2 * k3 + k4) / 6.0
 
+    #plot the voltage at each plotTime second.
     if Time > plotTime * plotCount:
         print(Time)
-
-        #plot voltage    
-        val=x[1:nbrSeg+2]
+        #plot voltage only.   
+        val=x[0:nbrSeg+1]
         d = np.linspace(0, lenght, len(val)) 
-        plt.figure(plotCount)
+        plt.subplot(nbrPlot, 1, plotCount)
         plt.plot(d, val)
         plt.grid()
         plotCount = plotCount + 1
