@@ -26,7 +26,7 @@ R = 220e-3  # Resistance per unit length
 G = 1.0e-9  # Conductance per unit length
 
 Rs = 50 #source resistance.
-Rl = 1  #load resistance.
+Rl = 50000  #load resistance.
 
 lenght = 100 #100 metre.
 nbrSeg = 1000  #number of segment.
@@ -42,7 +42,7 @@ def PrintCSR(A, filename):
  
 #This function is a tool to simplify in selecting the desired source function. 
 def SourceFunction(t):
-    return SourceFunctionStep(t)
+    return SourceFunctionGaussianPulse(t)
 
 # generate a time dependent signal
 def SourceFunctionGaussianPulse(t):
@@ -54,7 +54,7 @@ def SourceFunctionGaussianPulse(t):
       else:
          return 0.0
      
-def SourceFunctionGaussianSine(t):
+def SourceFunctionSine(t):
       return np.sin(2*mt.pi*13e6*t)
       
 def SourceFunctionStep(t):

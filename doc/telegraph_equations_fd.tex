@@ -4,7 +4,7 @@
 \usepackage{amsmath}
 \usepackage{mdframed}
 
-\title{telegraph equations solved with MFEM library}
+\title{Telegrapher's Eequations Solved with MFEM Library}
 \author{Denis Lachapelle}
 \date{February 2025}
 
@@ -15,7 +15,7 @@
 \maketitle
 
 \section{Introduction}
-This document explains the telegraph equations simulation using finite differences method; one first version using python and a second version based on MFEM library in C++ (not done yet).
+This document explains the telegrapher's equations simulation using finite differences method; one first version using python (numpy and scipy) and a second version based on MFEM library in C++.
 
 
 \section{Theory, Finite Differences}
@@ -31,7 +31,7 @@ The telegraph equations are:
 \subsection{Discretization}
 
 \begin{enumerate}
-\item Assume the TL is divided in N segments (nbrSeg) with node 0 to N. There is N+1 nodes. So nodes are located at $n \Delta x$.
+\item Assume the transmission line is divided in N segments (nbrSeg) with nodes 0 to N. There is N+1 nodes. So nodes are located at $n \Delta x$.
 \item Time is sampled at $k \Delta T$.
 \item Assume the $\frac{\partial V(t, x)}{\partial x}$ and $\frac{\partial I(t, x)}{\partial x}$ are constant over each segment.
 \end{enumerate}
@@ -126,7 +126,7 @@ Gv is (nbrSeg+1) x (nbrSeg+1) identity matrix scale by either -G/C.\\
 
 Ri is nbrSeg x nbrSeg identity matrix scale by either -R/L.\\
 
-\subsection{Adding Source}
+\subsection{Adding a Source}
 
 To add the source with a series resistor we should write the equation for $\frac{\partial{V_0}}{\partial{t}}$ which one will replace the first row equations. The equation is the same as equation 4 with added current from Rs.
 
@@ -173,7 +173,7 @@ The resulting matrix equation is ...
 \end{bmatrix}
 \end{equation}
 
-\subsection{Adding Load}
+\subsection{Adding a Load}
 
 Now we need to add the right boundary which is a load Rl. The last voltage node will get influenced by Rl, the equation becomes ...
 
@@ -280,91 +280,39 @@ The signal injected is  gaussian pulse centered at 100ns with a Tau of 20ns mult
 \begin{figure}[H]
 	\centering
 	\includegraphics[width=1\textwidth]{step-2.png} % Adjust width as needed
-	\caption{Step, cable 100m, Rs=50, Rl=}
+	\caption{Step, cable 100m, Rs=50, Rl=50}
 \end{figure}
 
 
 \section{MFEM Implementation}
 
-DO NOT WORK YET.
+The program is named stltfdrk4.cpp for Single Transmission Line Transient Finite Difference runge kutta 4.\\
 
-The program is named stltfdrk4.cpp for Single Transmission Line Transient Finite Difference runge kutta 4.
-
-
-
-The software do not work fine; I cant find any error. the next step...
-\begin{itemize}
-	\item rewrite the software in python or octave.
-\end{itemize}
-
-\includegraphics{python-with-zero.png}
-
-ChatGPT:
-the resulting signal appear to be with a zero on all odd nodes.
-	
-	
-	ChatGPT said:
-	Yes, if the resulting signal shows zeros on all odd nodes (e.g., nodes 1, 3, 5, ...), it's a strong hint that there’s a structural symmetry or a bug in the way your system is discretized — particularly in how the derivative matrices Di and Dv are built.\\
-	
-The solution according to chatgpt is to have nbrSeg+1 voltage nodes and nbrSeg current in between voltage nodes. So the block matrix will be like this:
-
-\begin{equation}
-	\begin{bmatrix}
-		\frac{\partial{V}}{\partial{t}} \\
-		\frac{\partial{I}}{\partial{t}} 
-	\end{bmatrix}	
-	=
-	\begin{bmatrix}
-		Gv Di \\
-		Dv Ri
-	\end{bmatrix}
-	\begin{bmatrix}
-		V^k \\
-		I^k \\
-	\end{bmatrix}
-\end{equation}
-
-Gv dimensions will be nbrSeg+1 by nbrSeg+1.\\
-Di dimensions will be nbrSeg+1 by nbrSeg.\\
-Dv dimensions will be nbrSeg by nbrSeg+1.\\
-Ri dimensions will be nbrSeg by nbrSeg.\\
-
-So the block matrix dimensions are 2 nbrSeg+1 by 2 nbrSeg+1.
-
-\begin{equation}
-	\begin{bmatrix}
-		N+1, N+1 &  N+1, N \\
-		N, N+1 & N, N
-	\end{bmatrix}
-\end{equation}
-
-The following figure shows the pulse propagating along a 100m RG-58 transmission line.
-
-\begin{figure}[h]
+\begin{figure}[H]
 	\centering
-	\includegraphics[width=1\textwidth]{pulse-python.png} % Adjust width as needed
-	\caption{Test pulse propagating}
-	\label{fig:example}
+	\includegraphics[width=1\textwidth]{pulse_mfem.png} % Adjust width as needed
+	\caption{Test pulse propagating, Rs=50, Rl=1, MFEM}
 \end{figure}
 
-The simulation works fine using Euler Forward difference to differentiate v(x) and I(x) against x and Runge Kutta 4 for time stepping.\\
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\textwidth]{1000m_mfem.png} % Adjust width as needed
+	\caption{13 MHz sinewave, coax=1000m, Rs=50, Rl=50, MFEM}
+\end{figure}
 
-The reflected voltage is inverted, this looks like the end of the transmission line is shorted, this is the case because the last row is all zero, so di/dx cannot be ... THAT WILL BE TO COMPLETE.\\
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\textwidth]{step-1_mfem.png} % Adjust width as needed
+	\caption{Step, cable 100m, Rs=50, Rl=open}
+\end{figure}
 
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=1\textwidth]{step-2_mfem.png} % Adjust width as needed
+	\caption{Step, cable 100m, Rs=50, Rl=50}
+\end{figure}
 
-	
-	
-Consider inserting this note somewhere...
-	The block matrix take care of the transmission line and the following code lines take care of the left and right boundary conditions.
-	
-	\begin{verbatim}
-		
-		#apply the left boundary condition which is a voltage source with Rs in séries.
-		x[0, 0] = x[0, 0] + deltaT*(SourceFunction(Time) - x[0, 0])/(Rs*C*h)
-		
-		#apply the right boundary condition whichis a load Rl.
-		x[nbrSeg, 0] = x[nbrSeg, 0] - deltaT*x[nbrSeg, 0]/(Rl*C*h)
-	\end{verbatim}
-	
-	But this method makes the RK4 not applied to the boundary. So the best way would be to include the boundary conditions within the block matrix.\\
+\section{Conclusion}
+The telegrapher's equations are resolved using finite difference method first in python using numpy and scipy and then C++ using MFEM library.
+
 \end{document}

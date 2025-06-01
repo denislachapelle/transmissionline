@@ -9,8 +9,8 @@ using namespace mfem;
 using namespace std;
 
 
+void CleanOutDir();
 void SMSumRows(const SparseMatrix &mat, Vector &vec);
-
 std::string findWordN(const std::string& filename, const std::string& targetWord, int N);
 int HowManyWire(const std::string& filename);
 double IntScalar3(FiniteElementSpace &fes, Coefficient &coeff, int Attr);

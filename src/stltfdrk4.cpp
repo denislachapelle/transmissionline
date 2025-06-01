@@ -5,9 +5,10 @@
 // Sample runs:  ./stltfdrk4
 //
 /*
-Description:  stltfe (single transmission line transient finite differences
+Description:  stltfdrk4.cpp (single transmission line transient finite differences
 runge kutta 4) simulate a single transmission line with various source
-signals, source impedances and load impedances.
+signals, source impedances and load impedances. It is based on finite difference and
+Runge Kutta 4 for time stepping.
 
 options:
 
@@ -18,14 +19,48 @@ options:
 #include <iostream>
 #include <math.h>
 #include <filesystem>
-
-//Physical group expected from mesh file.
-#define tl1 1
-#define input 2
-#define output 3
+#include <cstdlib>
 
 using namespace std;
 using namespace mfem;
+
+
+
+real_t SourceFunctionGaussianPulse(const Vector x, real_t t)
+{
+   /* gaussian pulse of tw wide centered at tc.*/
+   real_t tw = 20e-9;
+   real_t tc = 100e-9;
+   if(t<2*tc) return 4.0 * t/(2.0*tc)*(1-t/(2.0*tc)) * exp(-pow(((t-tc)/tw), 2.0));
+   else return 0.0;
+}
+
+real_t SourceFunctionStep(const Vector x, real_t t)
+{
+      //step.
+      real_t tau = 30e-9;
+      return 1.0 - exp(-t/tau);
+}
+
+real_t SourceFunctionSine(const Vector x, real_t t)
+{
+      return sin(2*M_PI*13e6*t);
+}
+
+
+
+Vector Zero(3);
+/*
+generate a time dependent signal
+*/
+
+
+
+real_t SourceFunction(const Vector x, real_t t)
+{
+   return SourceFunctionStep(x, t);
+}
+
 
 // TelegrapherOperator is used to timestep.
 class TelegrapherOperator : public TimeDependentOperator
@@ -41,7 +76,12 @@ public:
 
    virtual void Mult(const Vector &x, Vector &y) const
    {
-      (*block).Mult(x, y);
+      // x is const need to copy it to then force s[0].
+      Vector s(x.Size());
+      s=x;
+      s[0]= SourceFunction(Zero, t);
+
+      block->Mult(s, y);
    }
 };
  
@@ -55,90 +95,44 @@ class TransmissionLineTransient
       // Constants for the telegrapher’s equation for RG-58, 50 ohm.
       double L = 250e-9;  // Inductance per unit length
       double C = 100.0e-12; // Capacitance per unit length
-      double R = 1000e-3;  // Resistance per unit length
+      double R = 220e-3;  // Resistance per unit length
       double G = 1.0e-9;  // Conductance per unit length
 
-      // source and load impedance.
-      double Rs = 50.0;   // source impedance.
-      double Rl = 50.0; //load impedance.
+      double Rs = 50;
+      double Rl = 50;
 
-      double lenght = 100;
+      double lenght = 100; //100 metre.
       int nbrSeg = 1000;  //number of segment.
       real_t h = lenght/nbrSeg;
       real_t deltaT = 0.01e-9;
-      real_t endTime = 200e-9;
+      real_t endTime = 1500e-9;
       real_t Time = 0.0;
-      SparseMatrix *smDi, *smDv, *smRi, *smGv;
+
+
+      SparseMatrix *smDi, *smDv, *smRi, *smGv, *smVs;
+      Array<int> *BlockOffset;
       BlockOperator *fdBlockOperator;
-      Array<int> *RowBlockOffset;
-      Array<int> *ColBlockOffset;
       TelegrapherOperator *teleOp;
+
+      // solution vector, represent the transmission line.
       Vector *x;
       
    public:
       TransmissionLineTransient();
-      //delete all files in out dir.
-      int CleanOutDir();
       //parse the options.
       int Parser(int argc, char *argv[]);
-      int createFDBlockOperator();
-      int CreateFiniteDiffMatrix();
+      int CreateMatrix();
+      int CreateFDBlockOperator();
       int TimeSteps();
-      int debugFileWrite();
-      int TestSourceFunction();
 };
-/*
-generate a time dependent signal
-*/
-real_t SourceFunction(const Vector x, real_t t)
-{
-   if(0) 
-   {
-      /* 1GHz sinewave multiply by triangular wave of 20ns.*/
-      real_t th = 10e-9;
-      if(t<2*th) return 4.0 * t/th*(1-t/th) * sin(2*M_PI*1e9*t);
-      else return 0.0;
-   }
-   else if(1)
-   {
-      /* gaussian pulse of tw wide centered at tc.*/
-
-      real_t tw = 20e-9;
-      real_t tc = 100e-9;
-      if(t<2*tc) return 4.0 * t/(2.0*tc)*(1-t/(2.0*tc)) * exp(-pow(((t-tc)/tw), 2.0));
-      else return 0.0;
-   }
-}
-
-int TransmissionLineTransient::TestSourceFunction()
-{
-   double t=0.0, dt=0.1e-9, endTime=200e-9;
-   int size=endTime/dt;
-   Vector x(3);
-   Vector y(size);
-   for(int i=0; i<size; i++)
-   {
-      y(i)=SourceFunction(x, t);
-      t+=dt;
-   }
 
 
 
-   return 0;
-}
 
 TransmissionLineTransient::TransmissionLineTransient()
 {
    
 }
- 
-
-int TransmissionLineTransient::CleanOutDir()
-{
-    system("rm -f out/*");
-    return 1;
-}
-
  
 
 
@@ -151,10 +145,8 @@ int TransmissionLineTransient::Parser(int argc, char *argv[])
                 
    args.Parse();
 
-   // 2. Enable hardware devices such as GPUs, and programming models such as
-   //    CUDA, occ::, RAJA and OpenMP based on command line options.
-   Device device("cpu");
-   device.Print();
+ //  Device device("cpu");
+ //  device.Print();
 
    if (args.Good())
    {
@@ -165,43 +157,75 @@ int TransmissionLineTransient::Parser(int argc, char *argv[])
    return 0;
 }
 
-int TransmissionLineTransient::CreateFiniteDiffMatrix()
+int TransmissionLineTransient::CreateMatrix()
 {
 
    //Create the derivative matrix Dv.
-   smDv = new SparseMatrix(nbrSeg+1);
-   real_t val = -1/(L*2.0*h);
-   for(int i=0; i<nbrSeg+1; i++)
+   int nrow = nbrSeg;
+   int ncol = nbrSeg+1;
+   smDv = new SparseMatrix(nrow, ncol);
+   real_t val = 1/(L*h);
+   for(int i=0; i<nrow; i++)
    {
-      if(i+1<nbrSeg+1) smDv->Add(i, i+1, val);
-      if(i-1>= 0) smDv->Add(i, i-1, -val);
+      smDv->Add(i, i+1,  val);
+      smDv->Add(i,   i, -val);
    }
-   smDv->Finalize();
+   
 
    //Create the derivative matrix Di.
-   smDi = new SparseMatrix(nbrSeg+1);
-   val = -1/(C*2.0*h);
-   for(int i=0; i<nbrSeg+1; i++)
+   nrow = nbrSeg+1;
+   ncol = nbrSeg;
+   smDi = new SparseMatrix(nrow, ncol);
+   val = 1/(C*h);
+   for(int i=0; i<nrow; i++)
    {
-      if(i+1<nbrSeg+1) smDi->Add(i, i+1, val);
-      if(i-1>= 0) smDi->Add(i, i-1, -val);
+      if(i<ncol) smDi->Add(i, i,    val);
+      if(i-1 >= 0)   smDi->Add(i, i-1, -val);
    }
-   smDi->Finalize();
+   
 
 //Create the Ri matrix.
-    smRi = new SparseMatrix(nbrSeg+1);
-    for(int i=0; i<nbrSeg+1; i++)
+   nrow = nbrSeg;
+   ncol = nbrSeg;
+    smRi = new SparseMatrix(nrow, ncol);
+    val = -R/L;
+    for(int i=0; i<nrow; i++)
     {
-       smRi->Add(i, i, -R/L);
+       smRi->Add(i, i, val);
     }
-    smRi->Finalize();
+    
 
 //Create the Gv matrix.
-   smGv = new SparseMatrix(nbrSeg+1);
-   for(int i=0; i<nbrSeg+1; i++)
+   nrow = nbrSeg+1;
+   ncol = nbrSeg+1;
+   smGv = new SparseMatrix(nrow, ncol);
+   val = -G/C;
+   for(int i=0; i<nrow; i++)
    {
-      smGv->Add(i, i, -G/C);
+      smGv->Add(i, i, val);
    }
+   
+
+   
+   //add boundary condition for Vs and Rs.
+   //Vs/Rs caused current in V0.
+   //make extra column for Vs.
+   nrow = nbrSeg+1;
+   ncol = 1;
+   smVs = new SparseMatrix(nrow, ncol);
+   smVs->Set(0, 0, 1/(Rs*C*h));
+
+   // V0/Rs caused current out of V0.
+   smGv->Add(0, 0, - 1/(Rs*C*h));
+    
+   //add boundary condition for Rl.
+   // VnbrSeg/Rl caused out of VnbrSeg.
+   smGv->Add(nbrSeg, nbrSeg, - 1/(Rl*C*h));
+
+   smVs->Finalize();
+   smDv->Finalize();
+   smDi->Finalize();
+   smRi->Finalize();
    smGv->Finalize();
 
    cout << smDi->Height() << " smDi->Height()\n";
@@ -233,53 +257,46 @@ int TransmissionLineTransient::CreateFiniteDiffMatrix()
       std::ofstream out("out/smGv.txt");
       if(printMatrix) smGv->PrintMatlab(out);
    }
+
+   {
+      std::ofstream out("out/smVs.txt");
+      if(printMatrix) smVs->PrintMatlab(out);
+   }
    return 1;
 }
 
-int TransmissionLineTransient::createFDBlockOperator()
+int TransmissionLineTransient::CreateFDBlockOperator()
 {
 
-// 6. Define the BlockStructure of lhsMatrix
-   RowBlockOffset = new Array<int>(3);
-   (*RowBlockOffset)[0]=0;
-   (*RowBlockOffset)[1]=nbrSeg+1; 
-   (*RowBlockOffset)[2]=nbrSeg+1; 
-   RowBlockOffset->PartialSum();
+// 6. Define the BlockStructure
+   BlockOffset = new Array<int>(4);
+   (*BlockOffset)[0]=0;
+   (*BlockOffset)[1]=1; 
+   (*BlockOffset)[2]=nbrSeg+1; 
+   (*BlockOffset)[3]=nbrSeg;
+   BlockOffset->PartialSum();
    {
-      std::ofstream out("out/rowblockOffset.txt");
-      RowBlockOffset->Print(out, 10);
+      std::ofstream out("out/blockOffset.txt");
+      BlockOffset->Print(out, 10);
    }
   
-   ColBlockOffset = new Array<int>(3);
-   (*ColBlockOffset)[0]=0;
-   (*ColBlockOffset)[1]=nbrSeg+1; 
-   (*ColBlockOffset)[2]=nbrSeg+1; 
-   ColBlockOffset->PartialSum();
-   {
-      std::ofstream out("out/colblockOffset.txt");
-      ColBlockOffset->Print(out, 10);
-   }
-  
-   Device device("cpu");
-   MemoryType mt = device.GetMemoryType();
-
-   fdBlockOperator = new BlockOperator(*RowBlockOffset, *ColBlockOffset);
+   fdBlockOperator = new BlockOperator(*BlockOffset);
    
 // Build the operator, insert each block.
   // rhsOp->SetBlock(0, 0, DofByOne);
-  fdBlockOperator->SetBlock(0, 0, smGv);
-  fdBlockOperator->SetBlock(0, 1, smDi);
-  fdBlockOperator->SetBlock(1, 0, smDv);
-  fdBlockOperator->SetBlock(1, 1, smRi);
+  fdBlockOperator->SetBlock(1, 0, smVs);
+  fdBlockOperator->SetBlock(1, 1, smGv);
+  fdBlockOperator->SetBlock(1, 2, smDi);
+  fdBlockOperator->SetBlock(2, 1, smDv);
+  fdBlockOperator->SetBlock(2, 2, smRi);
    
-
       {
       std::ofstream out("out/fdBlockOperator.txt");
       if(printMatrix) fdBlockOperator->PrintMatlab(out);
       }
  
-      assert(fdBlockOperator->Height() == 2 * (nbrSeg+1));
-      assert(fdBlockOperator->Width() == 2 * (nbrSeg+1));
+      assert(fdBlockOperator->Height() == 1+nbrSeg+1+nbrSeg);
+      assert(fdBlockOperator->Width() ==  1+nbrSeg+1+nbrSeg);
    
    return 1;
 }
@@ -299,20 +316,45 @@ int TransmissionLineTransient::TimeSteps()
    x = new Vector(2*(nbrSeg+1));
    *x = 0.0;
 
-   Vector Zero(3);
+   int nbrPlot=5;
+   real_t plotTime = endTime/nbrPlot;
+   int plotCount = 0;
 
    while(Time<endTime)
    {
-      x[0]=SourceFunction(Zero, Time);
+     
       solver.Step(*x, Time, deltaT);
-
-      if((int)(Time/deltaT) % 1000 == 0)
+      
+      if(Time >= plotCount * plotTime)
       {
-         std::ofstream out("out/x.txt");
-         x->Print(out, 1);
+         std::string s = "out/x" + std::to_string(plotCount) + ".txt";
+         std::ofstream out(s);
+         Vector val(x->GetData()+1, nbrSeg+1);
+         val.Print(out, 1);
+         plotCount++;
+         cout << Time << " Time" << endl;
+         cout << val.Max() << " Max" << endl;
       }
-
+   
    Time += deltaT;
+   }
+   
+   {
+      std::ostringstream oss;
+       oss << "octave --persist --quiet --eval \"figure(1); hold on; ";
+    
+      for(int i=1; i<nbrPlot; i++) 
+      {
+         oss << "subplot(5,1, " << i << "); " << "plot(x" << i << "=load('out/x" << i << ".txt')); ";
+      }
+      oss << "input('Press Enter to close'); \"";
+      std::string result = oss.str();
+      system(result.c_str());
+      
+   //system("gnuplot -persist -e \"plot 'out/x1.txt' with lines title 'x1', \
+                                      'out/x2.txt' with lines title 'x2', \
+                                      'out/x3.txt' with lines title 'x3', \
+                                      'out/x4.txt' with lines title 'x4'\"");
    }
 
    {
@@ -324,25 +366,19 @@ int TransmissionLineTransient::TimeSteps()
 }
 
 
-int TransmissionLineTransient::debugFileWrite()
-{
-
-   return 1;
-
-
-}
 
 int main(int argc, char *argv[])
 {
+   Device device("cpu");
+   MemoryType mt = device.GetMemoryType();
+   
+   CleanOutDir();
 
    TransmissionLineTransient TLT;
-
    TLT.Parser(argc, argv);
-   TLT.CleanOutDir();
-   TLT.CreateFiniteDiffMatrix();
-   TLT.createFDBlockOperator();
+   TLT.CreateMatrix();
+   TLT.CreateFDBlockOperator();
    TLT.TimeSteps();
-   TLT.TestSourceFunction();
 
    return 0;
 }

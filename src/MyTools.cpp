@@ -8,6 +8,15 @@
 using namespace std;
 using namespace mfem;
 
+
+
+
+void CleanOutDir()
+{
+    system("rm -f out/*");
+}
+ 
+
 void SMSumColumns(const SparseMatrix &mat, Vector &vec)
 {
    int num_rows = mat.NumRows();
