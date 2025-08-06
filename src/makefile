@@ -4,7 +4,9 @@
 #
 
 MFEM_DIR ?= /mnt/c/mfem-4.7
+MFEM_DIR48 ?= /mnt/c/mfem/mfem-4.8
 MFEM_BUILD_DIR ?= /mnt/c/mfem-4.7
+MFEM_BUILD_DIR48 ?= /mnt/c/mfem/mfem-4.8
 
 GMSH_DIR ?= /
 #MFEM_DIR ?= /home/denislachapelle2003/fem/mfem-4.6
@@ -12,7 +14,7 @@ GMSH_DIR ?= /
 
 #COMMON_LIB = -L$(MFEM_BUILD_DIR)/miniapps/common -lmfem-common
 
-all: createtl tltransient tlchatgpt stlt sltfe stltferk4 stltfdrk4
+all: createtl tltransient tlchatgpt stlt sltfe stltferk4 stltfdrk4 stltfe2d stltfe2d_p
 
 createtl: createtl.cpp 
 	g++ -g -o ../createtl  -std=c++11 -I$(MFEM_DIR) createtl.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -L/usr/lib/libgmsh.so -lgmsh -lrt 
@@ -30,7 +32,7 @@ stltfe: stltfe.cpp MyTools.cpp
 	g++ -g -o ../stltfe  -std=c++11 -I$(MFEM_DIR) stltfe.cpp MyTools.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -L/usr/lib/libgmsh.so -lgmsh -lrt 
 
 stltferk4: stltferk4.cpp MyTools.cpp
-	g++ -g -o ../stltferk4  -std=c++11 -I$(MFEM_DIR) stltferk4.cpp MyTools.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -L/usr/lib/libgmsh.so -lgmsh -lrt 
+	g++ -g -O0 -o ../stltferk4  -std=c++11 -I$(MFEM_DIR) stltferk4.cpp MyTools.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -I/usr/local/gmsh/include -L/usr/local/gmsh/lib -lgmsh -L/usr/lib -lgmsh -lrt 
 
 stltfdrk4: stltfdrk4.cpp MyTools.cpp
 	g++ -g -o ../stltfdrk4  -std=c++11 -I$(MFEM_DIR) stltfdrk4.cpp MyTools.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -lrt 
@@ -41,3 +43,9 @@ stltfd: stltfd.cpp MyTools.cpp
 
 cstl: cstl.cpp 
 	g++ -g -o ../cstl  -std=c++11 -I$(MFEM_DIR) cstl.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -L/usr/lib/libgmsh.so -lgmsh -lrt 
+
+stltfe2d: stltfe2d.cpp MyTools.cpp
+	g++ -g -o ../stltfe2d  -std=c++11 -I$(MFEM_DIR) stltfe2d.cpp MyTools.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -I/usr/local/gmsh/include -L/usr/local/gmsh/lib -lgmsh -L/usr/lib -lgmsh -lrt 
+
+stltfe2d_p: stltfe2d_p.cpp MyTools.cpp
+	mpicxx  -g -O0 -Wall -std=c++11 -I$(MFEM_DIR48) -I$(MFEM_DIR48)/../hypre/src/hypre/include stltfe2d_p.cpp MyTools.cpp -o ../stltfe2d_p -L$(MFEM_BUILD_DIR48) -lmfem -L$(MFEM_DIR48)/../hypre-2.33.0/src/hypre/lib -lHYPRE -L$(MFEM_DIR48)/../metis-4.0.3 -lmetis -lrt
