@@ -8,7 +8,7 @@
 using namespace mfem;
 using namespace std;
 
-
+bool EntryExists(const mfem::SparseMatrix &A, int i, int j);
 void CleanOutDir();
 void SMSumRows(const SparseMatrix &mat, Vector &vec);
 std::string findWordN(const std::string& filename, const std::string& targetWord, int N);

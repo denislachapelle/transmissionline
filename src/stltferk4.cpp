@@ -8,6 +8,9 @@
 Description:  stltfe (single transmission line transient finite element
 runge kutta 4) simulate a single transmission line with various source
 signals, source impedances and load impedances.
+
+As of july 7, 2025 it did not work. The solver do not converge even with square matrix
+I mean H1 H1 or L2 L2. I notice the lhsOp converge using octave.
 */
 
 #include <mfem.hpp>
@@ -16,65 +19,395 @@ signals, source impedances and load impedances.
 #include <math.h>
 #include <filesystem>
 
-//Physical group expected from mesh file.
-#define tl1 1
-#define input 2
-#define output 3
-
 using namespace std;
 using namespace mfem;
+
+// global variables
+bool printMatrix = true; //control matrix saving to file.
+bool noSource = true; // no code for the source enabled.
+
+real_t SourceFunctionGaussianPulse(const Vector x, real_t t)
+{
+   /* gaussian pulse of tw wide centered at tc.*/
+   real_t tw = 20e-9;
+   real_t tc = 100e-9;
+   if(t<2*tc) return 4.0 * t/(2.0*tc)*(1-t/(2.0*tc)) * exp(-pow(((t-tc)/tw), 2.0));
+   else return 0.0;
+}
+
+real_t SourceFunctionStep(const Vector x, real_t t)
+{
+      //step.
+      real_t tau = 30e-9;
+      return 1.0 - exp(-t/tau);
+}
+
+real_t SourceFunctionSine(const Vector x, real_t t)
+{
+      return sin(2*M_PI*13e6*t);
+}
+
+
+/*
+generate a time dependent signal
+*/
+real_t SourceFunction(const Vector x, real_t t)
+{
+   return SourceFunctionGaussianPulse(x, t);
+}
+
+
+typedef double (*SourceFunctionType)(const Vector x, double time);
+
+class VsRsCoefficient : public Coefficient
+{
+   private:
+      Vector zeroVec;
+      double t, Rs;
+      SourceFunctionType vs;
+      
+   public:
+      VsRsCoefficient(double Rs_, SourceFunctionType vs_)
+      : Rs(Rs_), vs(vs_)
+      {
+         zeroVec.SetSize(3);
+         zeroVec=0.0;
+      }
+
+      void SetTime(real_t t_) {t = t_;}
+
+    virtual double Eval(ElementTransformation &T, const IntegrationPoint &ip)
+    {
+        double val = -vs(zeroVec, t) / Rs;
+        return -vs(zeroVec, t) / Rs;  // forcing term
+    }
+};
+
+
+
+
+
+// TelegrapherOperator is used to timestep, it compute the d(.)/dt.
+class TelegrapherOperator : public TimeDependentOperator
+{
+private:
+   
+   FiniteElementSpace *VFESpace, *IFESpace;
+   MixedBilinearForm *M_VI, *M_IV;
+   BilinearForm *S_I, *S_V;
+   SparseMatrix *smS_I, *smS_V, *smM_VI, *smM_IV;
+   LinearForm *LFVS, *LFVA;
+   Array<int> *boundary_dofs;
+   Array<int> *bdr_marker;
+   VsRsCoefficient *VsRs;
+
+   BlockOperator *lhsOp;
+   Array<int> *lhsRowBlockOffset, *lhsColBlockOffset;
+
+   BlockDiagonalPreconditioner *prec;
+            
+   BlockOperator *rhsOp;
+   Array<int> *rhsRowBlockOffset, *rhsColBlockOffset;
+
+    
+   // Constants for the telegrapher’s equation for RG-58, 50 ohm.
+   double L = 250e-9;  // Inductance per unit length
+   double C = 100e-12; // Capacitance per unit length
+   double R = 220e-3;  // Resistance per unit length
+   double G = 1.0e-2;  // Conductance per unit length
+
+   // source and load impedance.
+   double Rs = 50.0;   // source impedance.
+   double Rl = 50.0; //load impedance.
+
+public:
+   TelegrapherOperator(FiniteElementSpace *VFESpace_, FiniteElementSpace *IFESpace_)
+      : TimeDependentOperator(VFESpace_->GetVSize()+IFESpace_->GetVSize(), 0.0, EXPLICIT), VFESpace(VFESpace_), IFESpace(IFESpace_)
+   {
+
+      cout << sqrt(L*C) << " sqrt(L*C)\n";      
+      //
+      // Define the mass and stiffnes matrix
+      //
+      ConstantCoefficient one(1.0);
+
+      M_IV = new MixedBilinearForm(IFESpace, VFESpace);
+      M_IV->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
+      M_IV->Assemble();
+      M_IV->Finalize();
+      smM_IV = &(M_IV->SpMat());
+
+      M_VI = new MixedBilinearForm(VFESpace, IFESpace);
+      M_VI->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
+      M_VI->Assemble();
+      M_VI->Finalize();
+      smM_VI = &(M_VI->SpMat());
+
+      S_I = new BilinearForm(IFESpace);
+      S_I->AddDomainIntegrator(new DerivativeIntegrator(one, 0));
+      S_I->Assemble();
+      S_I->Finalize();
+      smS_I = &(S_I->SpMat());
+
+      S_V = new BilinearForm(VFESpace);
+      S_V->AddDomainIntegrator(new DerivativeIntegrator(one, 0));
+      S_V->Assemble();
+      S_V->Finalize();
+      smS_V = &(S_V->SpMat());
+
+      cout << M_IV->Height() << " M_IV->Height()\n";
+      cout << M_IV->Width() << " M_IV->Width()\n";
+      
+      cout << M_VI->Height() << " M_VI->Height()\n";
+      cout << M_VI->Width() << " M_VI->Width()\n";
+      
+      cout << S_V->Height() << " S_V->Height()\n";
+      cout << S_V->Width() << " S_V->Width()\n";
+
+      cout << S_I->Height() << " S_I->Height()\n";
+      cout << S_I->Width() << " S_I->Width()\n";
+
+      bdr_marker = new Array<int>(IFESpace->GetMesh()->bdr_attributes.Size());
+      assert(bdr_marker->Size() == 2);
+      *bdr_marker = 0;
+      (*bdr_marker)[0] = 1; 
+
+      if(noSource == false)
+      {
+         ConstantCoefficient oneOverRs(1.0/Rs);
+         LFVA = new LinearForm(IFESpace);
+         LFVA->AddBdrFaceIntegrator(new BoundaryLFIntegrator(oneOverRs), *bdr_marker);
+         LFVA->Assemble();
+
+         VsRs = new VsRsCoefficient(Rs, SourceFunction);
+         VsRs->SetTime(0.0);
+         LFVS = new LinearForm(IFESpace);
+         LFVS->AddBdrFaceIntegrator(new BoundaryLFIntegrator(*VsRs), *bdr_marker);
+         LFVS->Assemble();
+      
+         {
+            std::ofstream out("out/LFVS.txt");
+            LFVS->Print(out, 10);
+         }
+
+         {
+            std::ofstream out("out/LFVA.txt");
+            LFVA->Print(out, 10);
+         }
+      }
+      
+      // 6. Define the BlockStructure of lhsMatrix
+      lhsRowBlockOffset = new Array<int>(3);
+      (*lhsRowBlockOffset)[0]=0;
+      (*lhsRowBlockOffset)[1]=smM_VI->Height(); 
+      (*lhsRowBlockOffset)[2]=smM_IV->Height(); 
+      lhsRowBlockOffset->PartialSum();
+      {
+         std::ofstream out("out/lhsRowBlockOffset.txt");
+         lhsRowBlockOffset->Print(out, 10);
+      }
+
+      lhsColBlockOffset = new Array<int>(3);
+      (*lhsColBlockOffset)[0]=0;
+      (*lhsColBlockOffset)[1]=smM_VI->Width(); 
+      (*lhsColBlockOffset)[2]=smM_IV->Width(); 
+      lhsColBlockOffset->PartialSum();
+      {
+         std::ofstream out("out/lhsColBlockOffset.txt");
+         lhsColBlockOffset->Print(out, 10);
+      }
+   
+      lhsOp = new BlockOperator(*lhsRowBlockOffset, *lhsColBlockOffset);
+      
+   // Build the operator, insert each block.
+   // row 0 ...
+         
+      lhsOp->SetBlock(0, 0, smM_VI, C);
+      lhsOp->SetBlock(1, 1, smM_IV, L);
+
+      {
+      std::ofstream out("out/lhsOp.txt");
+      if(printMatrix) lhsOp->PrintMatlab(out);
+      }
+
+      // 6. Define the BlockStructure of rhsMatrix
+      rhsRowBlockOffset = new Array<int>(3);
+      (*rhsRowBlockOffset)[0]=0;
+      (*rhsRowBlockOffset)[1]=smM_VI->Height(); 
+      (*rhsRowBlockOffset)[2]=smS_V->Height(); 
+      rhsRowBlockOffset->PartialSum();
+      {
+         std::ofstream out("out/rhsRowBlockOffset.txt");
+         rhsRowBlockOffset->Print(out, 10);
+      }
+
+      rhsColBlockOffset = new Array<int>(3);
+      (*rhsColBlockOffset)[0]=0;
+      (*rhsColBlockOffset)[1]=smM_VI->Width(); 
+      (*rhsColBlockOffset)[2]=smS_I->Width(); 
+      rhsColBlockOffset->PartialSum();
+      {
+         std::ofstream out("out/rhsColBlockOffset.txt");
+         rhsColBlockOffset->Print(out, 10);
+      }
+
+      rhsOp = new BlockOperator(*rhsRowBlockOffset, *rhsColBlockOffset);
+      
+   // Build the operator, insert each block.
+   // rhsOp->SetBlock(0, 0, DofByOne);
+      rhsOp->SetBlock(0, 0, smM_VI, -G);
+      rhsOp->SetBlock(0, 1, smS_I, 1.0);
+      rhsOp->SetBlock(1, 0, smS_V, 1.0);
+      rhsOp->SetBlock(1, 1, smM_IV, -R);
+
+      {
+      std::ofstream out("out/rhsOp1.txt");
+      if(printMatrix) rhsOp->PrintMatlab(out);
+      }
+
+      if(noSource == false)
+      {
+         // add linear form LFVA to row 0 of block 00.
+         Operator &A00_copy = rhsOp->GetBlock(0, 0);
+         SparseMatrix *SP = dynamic_cast<SparseMatrix*>(&A00_copy);
+
+         for(int i=0; i<LFVA->Size(); i++)
+         {
+            if ((*LFVA)[i] != 0.0)
+            {
+               SP->Add(0, i, -(*LFVA)[i]);
+            }
+         }
+
+         {
+         std::ofstream out("out/rhsOp2.txt");
+         if(printMatrix) rhsOp->PrintMatlab(out);
+         }  
+      }
+
+prec = new BlockDiagonalPreconditioner(*lhsRowBlockOffset);
+
+// Example: setting Jacobi or AMG on each block
+prec->SetDiagonalBlock(0, new GSSmoother(*smM_VI));
+prec->SetDiagonalBlock(1, new GSSmoother(*smM_IV));
+
+      /*
+      lhsOpFlat = new SparseMatrix;
+      FlattenBlockOperator(*lhsOp, *lhsOpFlat);
+
+      prec = new GSSmoother(*lhsOpFlat);
+      */
+   }
+
+   virtual void Mult(const Vector &x, Vector &y) const
+   {
+      Vector b(x.Size());
+      rhsOp->Mult(x, b);
+
+      {
+         std::ofstream out("out/xrhs.txt");
+         if(printMatrix) x.Print(out, 1);
+      }  
+
+      {
+         std::ofstream out("out/brhs.txt");
+         if(printMatrix) b.Print(out, 1);
+      }  
+
+
+
+
+      if(noSource == false)
+      {
+         //update LinearForm LFVS.
+         VsRs->SetTime(GetTime());
+         *LFVS=0;
+         LFVS->Assemble();
+
+         //add LFVS to b.
+         Vector b0(b.GetData(), LFVS->Size());
+         b0+=*LFVS;
+      }
+
+     //DL250707: it look like GMRESSolver cannot solve the operator lhsOp
+     //even if octave can. I am stuck.
+
+      /*
+      //solve for y.
+      GMRESSolver solver;
+      solver.SetAbsTol(1e-12);
+      solver.SetRelTol(1e-8);
+      solver.SetMaxIter(1000);
+      solver.SetPrintLevel(1);
+      solver.SetKDim(100);
+      solver.SetOperator(*lhsOp);
+      solver.SetPreconditioner(*prec);
+      solver.Mult(b, y);
+*/
+
+/*
+      //solve for y0.
+
+      GMRESSolver solver;
+      solver.SetAbsTol(1e-25);
+      solver.SetRelTol(1e-10);
+      solver.SetMaxIter(1000);
+      solver.SetPrintLevel(1);
+      solver.SetKDim(50);
+      solver.SetOperator(lhsOp->GetBlock(0, 0));
+      //gmres.SetPreconditioner(*prec);
+      Vector b0(b.GetData(), IFESpace->GetVSize());
+      Vector y0(IFESpace->GetVSize());
+      solver.Mult(b0, y0);
+
+      //solve for y1.
+      solver.SetAbsTol(1e-25);
+      solver.SetRelTol(1e-10);
+      solver.SetMaxIter(1000);
+      solver.SetPrintLevel(1);
+      solver.SetKDim(50);
+      solver.SetOperator(lhsOp->GetBlock(1, 1));
+      //gmres.SetPreconditioner(*prec);
+      Vector b1(b.GetData()+IFESpace->GetVSize(), VFESpace->GetVSize());
+      Vector y1(VFESpace->GetVSize());
+      solver.Mult(b1, y1);
+
+      Vector out0_view(y.GetData(), IFESpace->GetVSize());
+      Vector out1_view(y.GetData() + IFESpace->GetVSize(), VFESpace->GetVSize());
+      out0_view = y0;
+      out1_view = y1;
+   */
+   }
+};
+ 
 
 class TransmissionLineTransient
 {
    private:
-      // 1. Parse command-line options.
-      const char *meshFile = "stlmesh-1.msh";
       int order = 1;
-      bool printMatrix = true;
-      
-// Constants for the telegrapher’s equation for RG-58, 50 ohm.
-double L = 250e-9;  // Inductance per unit length
-double C = 100.0e-12; // Capacitance per unit length
-double R = 1000e-3;  // Resistance per unit length
-double G = 1.0e-9;  // Conductance per unit length
+      double lenght = 10;
+      int nbrSeg = 100;
 
-// source and load impedance.
-double Rs = 50.0;   // source impedance.
-double Rl = 50.0; //load impedance.
-
-      real_t deltaT = 0.001e-9;
-      real_t endTime = 20e-9;
+      real_t deltaT = 0.1e-9;
+      real_t endTime = 100e-9;
       real_t Time = 0.0;
 
       Mesh *mesh;
       int dim; 
       int nbrel;  //number of element.
 
-      FiniteElementCollection *FEC;
-      FiniteElementSpace *FESpace;
-      int nbrDof;   //number of degree of freedom.
+      FiniteElementCollection *VFEC, *IFEC;
+      FiniteElementSpace *VFESpace, *IFESpace;
+      int VnbrDof, InbrDof;   //number of degree of freedom.
 
-      BilinearForm *S_V, *S_I, *M_V, *M_I;
+      TelegrapherOperator *teleOp;
 
-      SparseMatrix *smM_V, *smM_I, *smS_V, *smS_I;
-      SparseMatrix *K1smS_V, *K2smM_V, *K3smM_I, *K4smS_I;
-      DenseMatrix *DofByOne, *OneByOne;
+      Vector *I, *V, *b, *y;
+      Array<int> *xBlockOffsets; 
+      BlockVector *xBlock;  //unknown block vector made of V and I.
 
-      BlockOperator *lhsOp;
-      Array<int> *lhsRowBlockOffset;
-      Array<int> *lhsColBlockOffset;
       
-      BlockOperator *rhsOp;
-      Array<int> *rhsRowBlockOffset;
-      Array<int> *rhsColBlockOffset;
-      
-      Vector *xL, *xR, *b, *Input, *y;
-      
-      GSSmoother **gs;
-      BlockDiagonalPreconditioner *block_prec;
-
       GridFunction *VGF, *IGF; 
-      
    
    public:
       TransmissionLineTransient();
@@ -84,32 +417,12 @@ double Rl = 50.0; //load impedance.
       int Parser(int argc, char *argv[]);
       int LoadMeshFile();
       int CreateFESpace();
-      int CreateBilinears();
-      int CreateLhsBlockOperator();
-      int CreateRhsBlockOperator();
-      int CreatePreconditionner();
       int TimeSteps();
       int debugFileWrite();
-      /*
-      int CreateEssentialBoundary();
       
-      
-      int CreaterhsVector();
-      int CreatexVector();
-      int CreatePreconditionner();
-      int Solver();
-      int PostPrecessing();
-      int DisplayResults();
-      int Save();
-   */
 };
 
-real_t SourceFunction(const Vector x, real_t t)
-{
-   real_t th = 10e-9;
-   if(t<2*th) return t/th*(1-t/th) * sin(2*M_PI*1e9*t);
-   else return 0.0;
-}
+
 
 TransmissionLineTransient::TransmissionLineTransient()
 {
@@ -130,8 +443,6 @@ int TransmissionLineTransient::Parser(int argc, char *argv[])
 {
 
    OptionsParser args(argc, argv);
-   args.AddOption(&meshFile, "-mf", "--meshfile",
-                  "file to use as mesh file.");
    args.AddOption(&order, "-o", "--order",
                   "Finite element order (polynomial degree).");
    args.AddOption(&printMatrix, "-prm", "--printmatrix", "-dnprm", "--donotprintmatrix",
@@ -139,10 +450,7 @@ int TransmissionLineTransient::Parser(int argc, char *argv[])
                  
    args.Parse();
 
-   // 2. Enable hardware devices such as GPUs, and programming models such as
-   //    CUDA, occ::, RAJA and OpenMP based on command line options.
-   Device device("cpu");
-   device.Print();
+   
 
    if (args.Good())
    {
@@ -156,13 +464,13 @@ int TransmissionLineTransient::Parser(int argc, char *argv[])
 int TransmissionLineTransient::LoadMeshFile()
 {
 
-// 3. Read the mesh from the given mesh file.
-   mesh = new Mesh(meshFile, 1, 1);
-   
+// Creates 1D mesh, divided into n equal intervals.
+   mesh = new Mesh();
+   *mesh = mfem::Mesh::MakeCartesian1D(nbrSeg, lenght); 
    dim = mesh->Dimension();
    assert(dim==1); //this software works only for dimension 1.
 
-   cout << mesh->bdr_attributes.Max() << " bdr attr max\n"
+      cout << mesh->bdr_attributes.Max() << " bdr attr max\n"
         << mesh->Dimension() << " dimensions\n"
         << mesh->SpaceDimension() << " space dimensions\n"
         << mesh->GetNV() << " vertices\n"
@@ -172,328 +480,118 @@ int TransmissionLineTransient::LoadMeshFile()
 
    nbrel = mesh->GetNE();
 
+   {
+      std::ofstream out("out/meshprint.txt");
+      if(printMatrix) mesh->Print(out);
+   }
+   
    return 1;
 }
 
 int TransmissionLineTransient::CreateFESpace()
 {
-   FEC = new H1_FECollection(order, dim);
-   FESpace = new FiniteElementSpace(mesh, FEC);
-   nbrDof = FESpace->GetNDofs(); 
-   cout << FESpace->GetNDofs() << " degree of freedom\n";   
+   VFEC = new H1_FECollection(order, dim);
+   VFESpace = new FiniteElementSpace(mesh, VFEC);
+   VnbrDof = VFESpace->GetTrueVSize(); 
+   cout << VnbrDof << " V space degree of freedom\n";   
 
-return 1;
-}
-
-int TransmissionLineTransient::CreateBilinears()
-{
-   // Set up the mass and stiffness matrices
-  
-   M_V = new BilinearForm(FESpace);
-   M_I = new BilinearForm(FESpace);
-   S_V = new BilinearForm(FESpace);
-   S_I = new BilinearForm(FESpace);
-
-   // Define the mass and stiffnes
-   ConstantCoefficient one(1.0);
- 
-   M_V->AddDomainIntegrator(new MassIntegrator(one));
-   M_I->AddDomainIntegrator(new MassIntegrator(one));
-   
-   Vector xDirVector(1);
-   xDirVector=0.0;
-   xDirVector[0]=1.0;
-    
-    
-    S_V->AddDomainIntegrator(new DerivativeIntegrator(one, 0));
-    S_I->AddDomainIntegrator(new DerivativeIntegrator(one, 0));
-    
-   M_V->Assemble();
-   M_I->Assemble();
-   S_V->Assemble();
-   S_I->Assemble();
-
-   M_V->Finalize();
-   M_I->Finalize();
-   S_V->Finalize();
-   S_I->Finalize();
-
-   cout << M_V->Height() << " M_V->Height()\n";
-   cout << M_V->Width() << " M_V->Width()\n";
-   cout << M_I->Height() << " M_I->Height()\n";
-   cout << M_I->Width() << "M _I->Width()\n";
-   cout << S_V->Height() << " S_V->Height()\n";
-   cout << S_V->Width() << " S_V->Width()\n";
-   cout << S_I->Height() << " S_I->Height()\n";
-   cout << S_I->Width() << " S_I->Width()\n";
-   
-   smM_V = new SparseMatrix(M_V->SpMat());
-   smM_I = new SparseMatrix(M_I->SpMat());
-   smS_V = new SparseMatrix(S_V->SpMat());
-   smS_I = new SparseMatrix(S_I->SpMat());
-
-   K1smS_V = new SparseMatrix(*smS_V);
-   *K1smS_V *= deltaT/L;
-
-   K2smM_V = new SparseMatrix(*smM_V);
-   *K2smM_V *= (1 - R * deltaT / L);
-
-   K3smM_I = new SparseMatrix(*smM_I);
-   *K3smM_I *= (1 - G * deltaT / C);
-
-   K4smS_I = new SparseMatrix(*smS_I);
-   *K4smS_I *= deltaT/C;
-/*
-   // modify matrix to consider the source impedance.
-   K3smM_I->ScaleRow(0, 0.0);
-   K4smS_I->ScaleRow(0, 0.0);
-   K4smS_I->Set(0, 0, -Rs);
-
-   // modify matrix to consider the load impedance.
-   K3smM_I->ScaleRow(nbrDof-1, 0.0);
-   K4smS_I->ScaleRow(nbrDof-1, 0.0);
-   K4smS_I->Set(nbrDof-1, nbrDof-1, Rl);
-*/
-   {
-      std::ofstream out("out/K1smS_V.txt");
-      if(printMatrix) K1smS_V->PrintMatlab(out);
-   }
-
-   {
-      std::ofstream out("out/K2smM_V.txt");
-      if(printMatrix) K2smM_V->PrintMatlab(out);
-   }
-
-   {
-      std::ofstream out("out/K3smM_I.txt");
-      if(printMatrix) K3smM_I->PrintMatlab(out);
-   }
-
-   {
-      std::ofstream out("out/K4smS_I.txt");
-      if(printMatrix) K4smS_I->PrintMatlab(out);
-   }
-
-
-   
-   {
-      std::ofstream out("out/M_V.txt");
-      if(printMatrix) M_V->SpMat().PrintMatlab(out);
-   }
-
-   {
-      std::ofstream out("out/M_I.txt");
-      if(printMatrix) M_I->SpMat().PrintMatlab(out);
-   }
-
-   {
-      std::ofstream out("out/S_V.txt");
-      if(printMatrix) S_V->SpMat().PrintMatlab(out);
-   }
-
-   {
-      std::ofstream out("out/S_I.txt");
-      if(printMatrix) S_I->SpMat().PrintMatlab(out);
-   }
-
+   IFEC = new H1_FECollection(order, dim);
+   IFESpace = new FiniteElementSpace(mesh, IFEC);
+   InbrDof = IFESpace->GetTrueVSize(); 
+   cout << InbrDof << " I  space degree of freedom\n";   
    return 1;
 }
-
-
-int TransmissionLineTransient::CreateLhsBlockOperator()
-{
-
-// 6. Define the BlockStructure of lhsMatrix
-   lhsRowBlockOffset = new Array<int>(3);
-   (*lhsRowBlockOffset)[0]=0;
-   (*lhsRowBlockOffset)[1]=nbrDof; 
-   (*lhsRowBlockOffset)[2]=nbrDof; 
-   lhsRowBlockOffset->PartialSum();
-   {
-      std::ofstream out("out/lhsrowblockOffset.txt");
-      lhsRowBlockOffset->Print(out, 10);
-   }
-  
-   lhsColBlockOffset = new Array<int>(3);
-   (*lhsColBlockOffset)[0]=0;
-   (*lhsColBlockOffset)[1]=nbrDof; 
-   (*lhsColBlockOffset)[2]=nbrDof; 
-   lhsColBlockOffset->PartialSum();
-   {
-      std::ofstream out("out/lhscolblockOffset.txt");
-      lhsColBlockOffset->Print(out, 10);
-   }
-  
-   Device device("cpu");
-   MemoryType mt = device.GetMemoryType();
-
-   lhsOp = new BlockOperator(*lhsRowBlockOffset, *lhsColBlockOffset);
-   
-// Build the operator, insert each block.
-// row 0 ...
-   
-   lhsOp->SetBlock(0, 0, smM_I);
-   lhsOp->SetBlock(1, 1, smM_V);
-
-      {
-      std::ofstream out("out/lhsOp.txt");
-      if(printMatrix) lhsOp->PrintMatlab(out);
-      }
-
-      assert(lhsOp->Height() == 2 * nbrDof);
-      assert(lhsOp->Width() == 2 * nbrDof);
-
-   return 1;
-}
-
-
-int TransmissionLineTransient::CreateRhsBlockOperator()
-{
-
-// 6. Define the BlockStructure of lhsMatrix
-   rhsRowBlockOffset = new Array<int>(3);
-   (*rhsRowBlockOffset)[0]=0;
-   (*rhsRowBlockOffset)[1]=nbrDof; 
-   (*rhsRowBlockOffset)[2]=nbrDof; 
-   rhsRowBlockOffset->PartialSum();
-   {
-      std::ofstream out("out/rhsrowblockOffset.txt");
-      rhsRowBlockOffset->Print(out, 10);
-   }
-  
-   rhsColBlockOffset = new Array<int>(3);
-   (*rhsColBlockOffset)[0]=0;
-   //(*rhsColBlockOffset)[1]=1;
-   (*rhsColBlockOffset)[1]=nbrDof; 
-   (*rhsColBlockOffset)[2]=nbrDof; 
-   rhsColBlockOffset->PartialSum();
-   {
-      std::ofstream out("out/rhscolblockOffset.txt");
-      rhsColBlockOffset->Print(out, 10);
-   }
-  
-   Device device("cpu");
-   MemoryType mt = device.GetMemoryType();
-
-   DofByOne = new DenseMatrix(nbrDof, 1);
-   *DofByOne = 0.0;
-   DofByOne->Elem(0, 0) = 1.0;
-
-   OneByOne = new DenseMatrix(1, 1);
-   OneByOne->Elem(0, 0) = 0.0;
-
-   rhsOp = new BlockOperator(*rhsRowBlockOffset, *rhsColBlockOffset);
-   
-// Build the operator, insert each block.
-  // rhsOp->SetBlock(0, 0, DofByOne);
-   rhsOp->SetBlock(0, 0, K3smM_I);
-   rhsOp->SetBlock(0, 1, K4smS_I);
-   rhsOp->SetBlock(1, 0, K1smS_V);
-   rhsOp->SetBlock(1, 1, K2smM_V);
-   
-
-      {
-      std::ofstream out("out/rhsOp.txt");
-      if(printMatrix) rhsOp->PrintMatlab(out);
-      }
- 
-      assert(rhsOp->Height() == 2 * nbrDof);
-      assert(rhsOp->Width() == 0 + 2 * nbrDof);
-   
-   return 1;
-}
-
-
-int TransmissionLineTransient::CreatePreconditionner()
-{
-/*
-
-   // Create smoothers for diagonal blocks
-   gs = new GSSmoother*[2];
-   gs[0] = new GSSmoother(*smM_I); // Gauss-Seidel smoother
-   gs[1] = new GSSmoother(*smM_V); // Gauss-Siedel smoother
-   block_prec = new BlockDiagonalPreconditioner(*lhsRowBlockOffset);
-   block_prec->SetDiagonalBlock(0, gs[0]);
-   block_prec->SetDiagonalBlock(1, gs[1]);
-*/
-   return 1;
-}
-
-
-
 
 int TransmissionLineTransient::TimeSteps()
 {
-   cout << deltaT << " deltaT\n";
-   cout << sqrt(L*C) << " sqrt(L*C)\n";
+   teleOp = new TelegrapherOperator(VFESpace, IFESpace);
+   RK4Solver solver;
+   solver.Init(*teleOp);
+
+   //prepare the xblock [V I]^T.
+   I = new Vector(InbrDof); *I=0.0;
+   V = new Vector(VnbrDof); *V=1.0;
    
-   FunctionCoefficient SourceCoefficient(SourceFunction);
+   xBlockOffsets = new Array<int>(3); 
+   (*xBlockOffsets)[0]=0;
+   (*xBlockOffsets)[1]=VnbrDof;
+   (*xBlockOffsets)[2]=InbrDof;
+   xBlockOffsets->PartialSum();
+   xBlock = new BlockVector(*xBlockOffsets);
+   xBlock->GetBlock(0) = *V;
+   xBlock->GetBlock(1) = *I;
    
-   xL = new Vector(2 * nbrDof);
-   *xL = 0.0;
-   xR = new Vector(0 + 2 * nbrDof);
-   *xR = 0.0;
-   b = new Vector(2 * nbrDof);
-   *b = 0.0;
-   y = new Vector(2 * nbrDof);
-   *y = 0.0;
-   Input = new Vector(1000);
-   *Input = 0.0; int j = 0;
+   Vector sourceFunctionVector(endTime/deltaT + 1);
+   sourceFunctionVector=0.0;
+   int sourceFunctionCounter = 0;
+   Vector Zero(3);
+   Zero=0.0;
 
-   Vector zeroVector(3);
-   zeroVector = 0.0;
+   int plotCount = 0;
+   int nbrOfPlot = 3;
+   double plotTimeInterval = endTime/nbrOfPlot;
 
-   while(Time<endTime)
+   while(1)
    {
-      for(int i=0; i<0+2*nbrDof; i++) (*xR)[i]=(*xL)[i-0];
-      (*xR)[0]=SourceFunction(zeroVector, Time);
-      (*Input)[j++]=(*xR)[0];
-      (*xL)=0.0;
-      //rhs column y
+      cout << Time << endl;
+
       
-      rhsOp->Mult(*xR, *y);
+      //Save in a Vector for testing SourceFunction.
+      sourceFunctionVector[sourceFunctionCounter++] = SourceFunction(Zero, Time);  
 
-      // solve lhsOp xL = xR, to get xR.
-      GMRESSolver solver;
-      //solver.SetKDim(100);
-      solver.SetOperator(*lhsOp);
-      //solver.SetPreconditioner(*block_prec);
-      //solver.SetRelTol(1e-12);
-      //   solver.SetAbsTol(1e-8);
-      //solver.SetMaxIter(500);
-      //solver.SetPrintLevel(1);
-      solver.Mult(*y, *xL);     
+      //this section of code was quite tested.
+
+      double deltaT_ = deltaT;
+      solver.Init(*teleOp);
+      solver.Step(*xBlock, Time, deltaT_);
+
+      if(Time/plotTimeInterval >= 1.0*plotCount)
+      {
+         VGF = new GridFunction(VFESpace);
+         IGF = new GridFunction(IFESpace);
+  
+         // rebuild GFR and GFI from x.
+         VGF->MakeRef(VFESpace, *xBlock, 0);
+         IGF->MakeRef(IFESpace, *xBlock, VnbrDof);
+
+         std::string s = "V" + std::to_string(plotCount);
+         Glvis(mesh, VGF, s, 8, "c" );
+         s = "I" + std::to_string(plotCount);
+         Glvis(mesh, IGF, s, 8, "c" );
+
+         delete VGF;
+         delete IGF;
+
+         plotCount++;
+
+
+      }
       
-   Time += deltaT;
-   }
+      
+      if (Time>endTime) break;
+    
+      
+    
+   } 
 
+   {
+      std::ofstream out("out/sourcefunction.txt");
+      if(printMatrix) sourceFunctionVector.Print(out, 1);
+   }
+   
    return 1;
-}
-
-int TransmissionLineTransient::debugFileWrite()
-{
-   {
-      std::ofstream out("out/xL.txt");
-      if(printMatrix) xL->Print(out, 1);
-   }
-
-   {
-      std::ofstream out("out/y.txt");
-      if(printMatrix) y->Print(out, 1);
-   }
-
-   {
-      std::ofstream out("out/input.txt");
-      if(printMatrix) Input->Print(out, 1);
-   }
-
-   return 1;
-
-
 }
 
 int main(int argc, char *argv[])
 {
+
+   // 2. Enable hardware devices such as GPUs, and programming models such as
+   //    CUDA, occ::, RAJA and OpenMP based on command line options.
+   Device device("cpu");
+   device.Print();
+   MemoryType mt = device.GetMemoryType();
+
+
 
    TransmissionLineTransient TLT;
 
@@ -501,21 +599,7 @@ int main(int argc, char *argv[])
    TLT.CleanOutDir();
    TLT.LoadMeshFile();
    TLT.CreateFESpace();
-   TLT.CreateBilinears();
-   TLT.CreateLhsBlockOperator();
-   TLT.CreateRhsBlockOperator();
    TLT.TimeSteps();
-   /*
-   TLT.CreateEssentialBoundary();
-   
-   TLT.TimeSteps();
-   TLT.CreaterhsVector();
-   TLT.CreatexVector();
-   TLT.CreatePreconditionner();
-   TLT.Solver();
-   TLT.PostPrecessing();
-   TLT.DisplayResults();
-   TLT.Save();
-   */
+
    return 0;
 }

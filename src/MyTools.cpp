@@ -8,7 +8,18 @@
 using namespace std;
 using namespace mfem;
 
+bool EntryExists(const mfem::SparseMatrix &A, int i, int j)
+{
+    const int *I = A.GetI(); // Row offsets
+    const int *J = A.GetJ(); // Column indices
 
+    for (int k = I[i]; k < I[i+1]; ++k)
+    {
+        if (J[k] == j)
+            return true;
+    }
+    return false;
+}
 
 
 void CleanOutDir()

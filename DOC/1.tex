@@ -1,0 +1,375 @@
+\documentclass[12pt, letterpaper]{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath}
+\usepackage{mdframed}
+
+\title{telegraph equations solved with MFEM library using MFEM}
+\author{Denis Lachapelle}
+\date{June 2025}
+
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+This document explains the telegraph equations simulation using finite difference method based on MFEM library.
+  
+  
+  \section{Theory, a second trial}
+  V is approximated in H1 space and I in L2 space.
+  
+  \subsection{From Telegrah PDE to Matrix form}
+  
+  The telegraph equations are:
+  
+  \begin{equation}\frac{\partial{V}}{\partial{x}} + L \frac{\partial{I}}{\partial{t}} + R I = 0\end{equation}
+  
+  
+  \begin{equation}\frac{\partial{I}}{\partial{x}} + C \frac{\partial{V}}{\partial{t}} + G V = 0\end{equation}
+  
+  For now assumes a single line from points a to b.\\
+  
+Going to weak form using space H1 for V ($\phi$) and  L2 for I ($\psi$). Note the test functions span the entire domain and is zero on the border and the equations below have to be true for all test functions. Look at "element\_finis.pdf" p. 42.
+
+\begin{equation}\int_\Omega(\frac{\partial{V}}{\partial{x}} + L \frac{\partial{I}}{\partial{t}} + R I) \phi_i = 0\end{equation}
+
+\begin{equation}\int_\Omega(\frac{\partial{I}}{\partial{x}} + C \frac{\partial{V}}{\partial{t}} + G V) \psi_i = 0\end{equation}
+
+and then
+
+
+\begin{equation}
+	\int_\Omega\frac{\partial{V}}{\partial{x}} \phi_i
+	+ \int_\Omega(L \frac{\partial{I}}{\partial{t}} +  R I) \phi_i
+	= 0
+\end{equation}
+
+
+
+\begin{equation}
+	\int_\Omega\frac{\partial{I}}{\partial{x}} \psi_i
+	+ \int_\Omega(C \frac{\partial{V}}{\partial{t}} +  G V) \psi_i
+	= 0
+\end{equation}
+
+Using integration by part on the first term...
+
+\begin{equation}\int_a^b u(x) v'(x) \, dx = \Big[u(x) v(x)\Big]_a^b - \int_a^b u'(x) v(x) \, dx\end{equation}
+
+Each equations becomes ...
+
+\begin{equation}
+	\Big[\phi_i V \Big]_a^b
+	-\int_\Omega(V \frac{\partial{\phi_i}}{\partial{x}})
+	+ \int_\Omega(L \frac{\partial{I}}{\partial{t}} +  R I) \phi_i
+	= 0
+\end{equation}
+
+\begin{equation}
+	\Big[\psi_i I \Big]_a^b
+	-\int_\Omega(I \frac{\partial{\psi_i}}{\partial{x}})
+	+ \int_\Omega(C \frac{\partial{V}}{\partial{t}} +  G V) \psi_i
+	= 0
+\end{equation}
+
+Then we approximate V and I, V(x) by
+
+\begin{equation}V(x, t) = \sum_j V_j(t) \phi_j(x) \end{equation}
+
+and I(x) by 
+
+\begin{equation}I(x, t) = \sum_j I_j(t) \psi_j(x) \end{equation}
+
+
+
+Equations (8) becomes ...
+
+\begin{equation}
+	\Big[\phi_i \sum_j V_j(t) \phi_j(x) \Big]_a^b
+	- \int_{\Omega_i} \sum_j V_j \phi_j \frac{\partial{\phi_i}}{\partial{x}} 
+	+ L \int_{\Omega_i} \frac{\partial{}}{\partial t} \Big[ \sum{I_j} \psi_j \Big] \phi_i
+	+  R \int_{\Omega_i} \sum_j I_j \psi_j \phi_i
+	= 0
+\end{equation}
+
+Assume $\frac{\partial{I}}{\partial{t}}$ is constant on each element so we can exclude $\frac{\partial{I}}{\partial{t}}$ from inside the integral and interchange the integral and summation.
+
+\begin{equation}
+	\Big[\phi_i \sum_j V_j(t) \phi_j(x) \Big]_a^b
+	-\sum_j V_j \int_{\Omega_i}\phi_j \frac{\partial{\phi_i}}{\partial{x}} 
+	+ L \sum_j \frac{\partial{I_j}}{\partial t} \int_{\Omega_i} \psi_j \phi_i
+	+  R \sum_j I_j \int_{\Omega_i} \psi_j \phi_i
+	= 0
+\end{equation}
+
+and equation 9 becomes ...
+
+\begin{equation}
+	\Big[\psi_i \sum_j I_j(t) \psi_j(x) \Big]_a^b
+	- \sum_j I_j  \int_\Omega \psi_j \frac{\partial{\psi_i}}{\partial{x}}
+	+ C \sum_j \frac{\partial{V_j}}{\partial{t}} \int_\Omega \phi_j \psi_i
+	+ G \sum_j V_j \int_\Omega \phi_j \psi_i
+	= 0
+\end{equation}
+
+So now we have two equations (13) and (14) with unknown $V_j(t)$ and $I_j(t)$.\\
+
+The term $\Big[\phi_i \sum_j V_j(t) \phi_j(x) \Big]_a^b$ is $\phi_{N-1}(b) V(b, t) - \phi_0(a) V(a, t) $.\\
+
+The term $\Big[\psi_i \sum_j I_j(t) \psi_j(x) \Big]_a^b$ is $\psi_{N-1}(b) I(b, t) - \psi_0(a) I(a, t) $.\\
+
+The j span the trial functions (Approximating Functions) and the i span the elements. The equations can be converted in matrix form...
+
+\begin{equation}
+	\phi_i(b) V(b, t) - \phi_i(a) V(a, t) - S_V V + L M_V \frac{\partial I}{\partial t} + R M_V I = 
+	= 0
+\end{equation}
+
+\begin{equation}
+	\psi_i(b) I(b, t) - \psi_i(a) I(a, t) - S_I I + C M_I \frac{\partial V}{\partial t} + G M_I V = 
+	= 0
+\end{equation}
+
+Where ...
+
+\[S_V = \int_\Omega \phi_j \frac{\partial \phi_i}{\partial x}\]
+dimensions VDOFxVDOF
+
+\[M_V = \int_\Omega \psi_j \phi_i\]
+dimension VDOFxIDOF
+
+\[S_I = \int_\Omega \psi_j \frac{\partial \psi_i}{\partial x}\]
+dimension IDOFxIDOF
+
+\[M_I = \int_\Omega \phi_j \psi_i\]
+dimension IDOFxVDOF\\
+
+We can then isolate $L M_V \frac{\partial I}{\partial t}$ and $C M_I \frac{\partial V}{\partial t}$  on the right.
+
+
+
+\begin{equation}
+	L M_V \frac{\partial I}{\partial t} = - R M_V I + S_V V - \phi_i(b) V(b, t) + \phi_i(a) V(a, t)
+\end{equation}
+
+\begin{equation}
+	C M_I \frac{\partial V}{\partial t} =  - G M_I V + S_I I - \psi_i(b) I(b, t) + \psi_i(a) I(a, t)
+\end{equation}
+
+The combine block matrix will be ...
+
+\begin{equation}
+	\begin{bmatrix}
+		C M_I & 0 \\
+		0   & L M_V
+	\end{bmatrix}
+	\begin{bmatrix}
+		
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} \\
+	\end{bmatrix}
+	=
+	\begin{bmatrix}
+		 - G M_I & S_I\\
+		S_V &  - R M_V\\
+				
+	\end{bmatrix}
+	\begin{bmatrix}
+		V \\
+		I \\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+	-Fi \\
+	-Fv \\
+\end{bmatrix}	
+\end{equation}
+
+For the source Vs Rs, Fi shall have element 0 (x=a) $ - \psi_i(a) I(a, t)$ where I(a, t) is $\frac{V_S-V_0}{Rs}$ so it becomes $ - \psi_i(a) \frac{V_S-V_0}{Rs}$ and split in two $ - \psi_i(a) \frac{V_S}{Rs}  + \psi_i(a) \frac{V_0}{Rs}$. The term in $V_S$ is a forcing function and need to be an added linear form (column vector) in place of 
+$Fi$.
+The term in $V_0$ shall be assemble as a linear form and added to $A_{00}$ row 0. \\
+
+Just rewrite the equation with named submatrix.
+
+\begin{equation}
+	\begin{bmatrix}
+		C M_I & 0 \\
+		0   & L M_V
+	\end{bmatrix}
+	\begin{bmatrix}
+		
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} \\
+	\end{bmatrix}
+	=
+	\begin{bmatrix}
+		B0\\
+		B1\\
+	\end{bmatrix}	
+\end{equation}
+
+The equations are then independants:
+
+\begin{equation}
+	C M_I \frac{\partial{V}}{\partial{t}}
+	= B0	
+\end{equation}
+
+
+\begin{equation}
+	L M_V \frac{\partial{I}}{\partial{t}}
+	= B1	
+\end{equation}
+
+These two equations shall be solved separately.
+The first one is overdetermined while the second is underdetermined.\\
+
+\[
+A^T A x = A^T b
+\]
+
+
+DL250625: je suis blocqué la système ne donne pas de bon résultats, et je n'arrive pas à faire un preconditionner. Je dois prendre un break.\\
+
+Je retourne avec H1 et L2 puis je vais demander de l'aide sur mfem/issues.
+
+DL250709: New approach, I will work in 2D one dimensions being x and the other being time, so no need for runge kuta.
+
+
+\subsection{Source Boundary Condition}
+
+To add the voltage source Vs with Rs we should add the current I caused by (Vs-Va)/Rs to Va.\\
+
+Firstly add the current source caused by Vs/Rs, so to the rhs node vector element 0 of I add the contribution Vs/Rs. Units are OK because Vs/Rs gives Ampere.\\
+
+Secondly add to the coupling matrix (RHS matrix) the contribution of $R_s$ to account for $V_0$ caused current. So to $I_0$ row (A10) add to first element $-\frac{1}{R_s}$. Physical unit check; $S_V$ is a weight without unit so  $S_V V$ are Volt and $\frac{V}{R_s}$ unit is Volt.
+
+\begin{equation}
+	\begin{bmatrix}
+		C M & 0 \\
+		0   & L M
+	\end{bmatrix}
+	\begin{bmatrix}
+		
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} \\
+	\end{bmatrix}
+	=
+	\left[
+	\begin{bmatrix}
+		- G M & S_I\\
+		S_V & - R M\\
+	\end{bmatrix}
+	+
+		\begin{bmatrix}
+		0 & 0 \\
+		\vdots & \vdots \\
+		-\frac{1}{R_s} & 0 \\
+		0 & 0 \\
+		\vdots & \vdots \\
+	\end{bmatrix}
+	\right]
+	\left[
+	\begin{bmatrix}
+		V \\
+		I \\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+		0 \\
+		\frac{V_S}{R_s} \\
+		0
+	\end{bmatrix}
+	\right]
+\end{equation}
+
+\subsection{Load Boundary Condition}
+
+Add to the coupling matrix the current caused by Rl. This will be the element row  nbrDof-1, col nbrDof-1 of $S_V$.
+
+\begin{equation}
+	\begin{bmatrix}
+		C M & 0 \\
+		0   & L M
+	\end{bmatrix}
+	\begin{bmatrix}
+		
+		\frac{\partial{V}}{\partial{t}} \\
+		\frac{\partial{I}}{\partial{t}} \\
+	\end{bmatrix}
+	=
+	\left[
+	\begin{bmatrix}
+		- G M & S_I\\
+		S_V & - R M\\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+		0 & 0 \\
+		\vdots & \vdots \\
+		-\frac{1}{R_s} ... & 0 \\
+		0 & 0 \\
+		\vdots & \vdots \\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+		0 & 0 \\
+		\vdots & \vdots \\
+		... -\frac{1}{R_L} & 0 \\
+		0 & 0 \\
+		\vdots & \vdots \\
+	\end{bmatrix}
+	\right]
+	\left[
+	\begin{bmatrix}
+		V \\
+		I \\
+	\end{bmatrix}
+	+
+	\begin{bmatrix}
+		0 \\
+		\frac{V_S}{R_s} \\
+		0
+	\end{bmatrix}
+	\right]
+\end{equation}
+
+Let check the units to make sure the BC make sense.
+
+
+
+\subsection{C++/MFEM Implementation}
+
+The software is name stltferk4.cpp.
+
+Instead of using the MFEM class to add BC I modify the sparse matrix directly.\\
+
+\subsubsection{MV Matrix}
+The MV matrix is made this way:\\
+MV = new MixedBilinearForm(IFESpace, VFESpace);\\
+MV->AddDomainIntegrator(new MixedScalarMassIntegrator(one));\\
+which made the following operator $(\lambda u,v)$.\\
+
+\subsubsection{MI Matrix}
+MI = new MixedBilinearForm(VFESpace, IFESpace);\\
+MI->AddDomainIntegrator(new MixedScalarMassIntegrator(one));\\
+
+\subsubsection{$S_V$ Matrix}
+The $S_V$ Matrix is made with:\\
+SV = new BilinearForm(VFESpace);\\
+SV->AddDomainIntegrator(new DerivativeIntegrator(one, 0));\\
+
+Which one implement the following operator: $(\lambda \frac{du}{dx_i}, v)$
+
+\subsubsection{$S_I$ Matrix}
+The $S_I$ Matrix is made with:\\
+SI = new BilinearForm(IFESpace);\\
+SI->AddDomainIntegrator(new DerivativeIntegrator(one, 0));\\
+
+Which one implement the following operator: $(\lambda \frac{du}{dx_i}, v)$
+
+
+
+\end{document}
