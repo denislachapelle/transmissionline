@@ -187,7 +187,7 @@ real_t SourceFunctionSine(const Vector x, real_t t)
       return sin(2*M_PI*13e6*t);
 }
 
-FunctionCoefficient VsRsFunctionCoeff(SourceFunctionStep);
+FunctionCoefficient LMFunctionCoeff(SourceFunctionStep);
 
 
 
@@ -197,7 +197,7 @@ int main(int argc, char *argv[])
    // default options...
    bool printMatrix = true; //control matrix saving to file.
    bool noSource = true; // no code for the source enabled.
-   int order = 2;
+   int order = 1;
 
    OptionsParser args(argc, argv);
    args.AddOption(&order, "-o", "--order",
@@ -228,7 +228,7 @@ int main(int argc, char *argv[])
    
 
    double lenght = 10;
-   int nbrSeg = 100;
+   int nbrSeg = 10;
          
    // Constants for the telegrapher’s equation for RG-58, 50 ohm.
    double L = 250e-9 * timeScaling;  // Inductance per unit length, -9
@@ -238,7 +238,7 @@ int main(int argc, char *argv[])
 
    double Rs = 50.0;
    
-   real_t deltaT = 1e-9 * timeScaling;
+   real_t deltaT = 10e-9 * timeScaling;
    real_t endTime = 100e-9 * timeScaling;
    real_t Time = 0.0;
 //   
@@ -259,55 +259,17 @@ int main(int argc, char *argv[])
    }
 
    //
-   //create the submesh for the vsrs boundary.
-   //
-   Array<int> *vsrs_bdr_attrs = new Array<int>;
-   vsrs_bdr_attrs->Append(4); // Attribute ID=4 for the left boundary.
-   SubMesh *vsrsmesh = new SubMesh(SubMesh::CreateFromBoundary(*mesh, *vsrs_bdr_attrs));
-   //set BdrAttribute to 0 meaning they are not boundary, necessary for LFVS.
-   for (int i = 0; i < vsrsmesh->GetNBE(); i++)
-   {
-        vsrsmesh->SetBdrAttribute(i, 0);
-   }
-   vsrsmesh->FinalizeMesh();
-   vsrsmesh->PrintInfo();
-
-   {
-      std::ofstream out("out/vsrsmeshprint.txt");
-      if(printMatrix) vsrsmesh->Print(out);
-   }
-  
-   //
-   //create the submesh for the t initial boundary.
-   //
-   Array<int> *t0_bdr_attrs = new Array<int>;
-   t0_bdr_attrs->Append(1); // Attribute ID=1 for the bottom boundary.
-   SubMesh *t0mesh = new SubMesh(SubMesh::CreateFromBoundary(*mesh, *t0_bdr_attrs));
-   //set BdrAttribute to 0 meaning they are not boundary.
-   for (int i = 0; i < t0mesh->GetNBE(); i++)
-   {
-        t0mesh->SetBdrAttribute(i, 0);
-   }
-   t0mesh->FinalizeMesh();
-   t0mesh->PrintInfo();
-
-   {
-      std::ofstream out("out/t0meshprint.txt");
-      if(printMatrix) t0mesh->Print(out);
-   }
-  
-   //
    // Create the spaces.
    //
 
    //space for voltage.
-   H1_FECollection *VFEC = new H1_FECollection(order, 2);
+   H1_FECollection *VFEC = new H1_FECollection(order, dim);
    FiniteElementSpace *VFESpace = new FiniteElementSpace(mesh, VFEC);
    int VnbrDof = VFESpace->GetTrueVSize(); 
    cout << VnbrDof << " VFESpace degree of freedom\n";   
 
    //space for current.
-   L2_FECollection *IFEC = new L2_FECollection(order, 2);
+   H1_FECollection *IFEC = new H1_FECollection(order, dim);
    FiniteElementSpace *IFESpace = new FiniteElementSpace(mesh, IFEC);
    int InbrDof = IFESpace->GetTrueVSize(); 
    cout << InbrDof << " IFESpace degree of freedom\n";   
@@ -316,22 +278,17 @@ int main(int argc, char *argv[])
       if(printMatrix) IFESpace->Save(out);
    }
    
-   //space for lagrange multiplier 1 relate to Vs Rs,
-   //which cause boundary cnditions on I(0,y).
-   assert(order>=2);   
-   L2_FECollection *VSRSFEC = new L2_FECollection(order-1, 1);
-   FiniteElementSpace *VSRSFESpace = new FiniteElementSpace(vsrsmesh, VSRSFEC);
-   int VSRSnbrDof = VSRSFESpace->GetTrueVSize(); 
-   cout << VSRSnbrDof << " ISFESpace degree of freedom\n";   
-
-   //space for lagrange multiplier 2 relate to t initial.
-   //which cause boundary cnditions of zero on V(x, 0) and I(x, 0).
+   //space for lagrange multipliers.
    
-   L2_FECollection *T0FEC = new L2_FECollection(order-1, 1);
-   FiniteElementSpace *T0FESpace = new FiniteElementSpace(t0mesh, T0FEC);
-   int T0nbrDof = T0FESpace->GetTrueVSize(); 
-   cout << T0nbrDof << " T0FESpace degree of freedom\n";   
-
+   H1_Trace_FECollection *LMFEC = new H1_Trace_FECollection(order, dim);
+   FiniteElementSpace *LMFESpace = new FiniteElementSpace(mesh, LMFEC);
+   int LMnbrDof = LMFESpace->GetTrueVSize(); 
+   cout << LMnbrDof << " LMFESpace degree of freedom\n";   
+   cout << LMFESpace->GetNDofs() << " Number of trace DOFs" << endl;
+   {
+      std::ofstream out("out/LMFESpace.txt");
+      if(printMatrix) LMFESpace->Save(out);
+   }   
 //
 //Create the forms.
 //
@@ -381,24 +338,21 @@ int main(int argc, char *argv[])
    
 
    //Mixed Bilinear form VL1.
-   MixedBilinearForm *MBLF_VL1 = new MixedBilinearForm(VSRSFESpace, VSRSFESpace);
+   Array<int> *LM_bdr_attrs = new Array<int>;
+   LM_bdr_attrs->Append(4); // Attribute ID=4 for the left boundary.
+   BilinearForm *MBLF_VL1 = new BilinearForm(LMFESpace);
    ConstantCoefficient oneOverRs(1.0/Rs);
-   MBLF_VL1->AddDomainIntegrator(new MixedScalarMassIntegrator(oneOverRs));
+   MBLF_VL1->AddDomainIntegrator(new BoundaryMassIntegrator(oneOverRs), *LM_bdr_attrs);
    MBLF_VL1->Assemble();
    MBLF_VL1->Finalize();
    cout << MBLF_VL1->Height() << " MBLF_VL1 Height()." << endl;
    cout << MBLF_VL1->Width() << " MBLF_VL1 Width()." << endl;
 
- // TransferMap *tmap_vsrs_v =new TransferMap(VSRSFESpace, VFESpace);
- //  ProductOperator *MBLF_VL1_MAP = new ProductOperator(tmap_vsrs_v, &(MBLF_VL1->SpMat()), false, false);
-
-   
-   
-   
 
    //Mixed Bilinear form IL1.
-   MixedBilinearForm *MBLF_IL1 = new MixedBilinearForm(IFESpace, VSRSFESpace);
-   MBLF_IL1->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
+
+   MixedBilinearForm *MBLF_IL1 = new MixedBilinearForm(LMFESpace, IFESpace);
+   MBLF_IL1->AddDomainIntegrator(new BoundaryMassIntegrator(one), *LM_bdr_attrs);
    MBLF_IL1->Assemble();
    MBLF_IL1->Finalize();
    cout << MBLF_IL1->Height() << " MBLF_IL1 Height()." << endl;
@@ -415,16 +369,18 @@ int main(int argc, char *argv[])
    }
    
    //Mixed Bilinear form VL2.
-   MixedBilinearForm *MBLF_VL2 = new MixedBilinearForm(VFESpace, T0FESpace);
-   MBLF_VL2->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
+   Array<int> *t0_bdr_attrs = new Array<int>;
+   t0_bdr_attrs->Append(1); // Attribute ID=1 for the bottom boundary.
+   MixedBilinearForm *MBLF_VL2 = new MixedBilinearForm(LMFESpace, VFESpace);
+   MBLF_VL2->AddDomainIntegrator(new BoundaryMassIntegrator(one), *t0_bdr_attrs );
    MBLF_VL2->Assemble();
    MBLF_VL2->Finalize();
    cout << MBLF_VL2->Height() << " MBLF_VL2 Height()." << endl;
    cout << MBLF_VL2->Width() << " MBLF_VL2 Width()." << endl;
    
    //Mixed Bilinear form IL3.
-   MixedBilinearForm *MBLF_IL3 = new MixedBilinearForm(IFESpace, T0FESpace);
-   MBLF_IL3->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
+   MixedBilinearForm *MBLF_IL3 = new MixedBilinearForm(LMFESpace, IFESpace);
+   MBLF_IL3->AddDomainIntegrator(new BoundaryMassIntegrator(one), *t0_bdr_attrs);
    MBLF_IL3->Assemble();
    MBLF_IL3->Finalize();
    cout << MBLF_IL3->Height() << " MBLF_IL3 Height()." << endl;
@@ -440,8 +396,8 @@ int main(int argc, char *argv[])
       if(printMatrix) MBLF_IL3->SpMat().PrintMatlab(out); // instead of Print()
    }
 
-   LinearForm *LFVS = new LinearForm(VSRSFESpace);
-   LFVS->AddDomainIntegrator(new DomainLFIntegrator(VsRsFunctionCoeff));
+   LinearForm *LFVS = new LinearForm(LMFESpace);
+   LFVS->AddDomainIntegrator(new DomainLFIntegrator(LMFunctionCoeff));
    LFVS->Assemble();
 
    cout << LFVS->Size() << " LFVS Size()." << endl;
@@ -557,9 +513,9 @@ int main(int argc, char *argv[])
    //
    //create the x vector.
    //   
-      Vector *x = new Vector(VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof); *x = 0.0;
+      Vector *x = new Vector(VnbrDof + InbrDof + 3*LMnbrDof); *x = 0.0;
       
-      Vector *b = new Vector(VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof); *b = 0.0;
+      Vector *b = new Vector(VnbrDof + InbrDof + 3*LMnbrDof); *b = 0.0;
       b->AddSubVector(*LFVS, VnbrDof + InbrDof);
 
       
@@ -591,8 +547,8 @@ int main(int argc, char *argv[])
       if(printMatrix) bBlockB->Print(out, 1); // instead of Print()
       }
 
-      // create the x block vector B.const SparseMatrix *VSRSMap = dynamic_cast<const SparseMatrix*>(VSRSFESpace->GetProlongationMatrix());
-      Vector *xL1 = new Vector(VSRSnbrDof); *xL1=0.0;
+      // create the x block vector B.const SparseMatrix *LMMap = dynamic_cast<const SparseMatrix*>(LMFESpace->GetProlongationMatrix());
+      Vector *xL1 = new Vector(LMnbrDof); *xL1=0.0;
       Vector *xL2 = new Vector(T0nbrDof); *xL2=0.0;
       Vector *xL3 = new Vector(T0nbrDof); *xL3=0.0;
       BlockVector *xBlockB = new BlockVector(*BBrowOffset);
@@ -632,12 +588,12 @@ int main(int argc, char *argv[])
    assert(pb00.Width() == VnbrDof + InbrDof);
    
    PB11 pb11(*BB, pb00);
-   assert(pb11.Height() == VSRSnbrDof + T0nbrDof + T0nbrDof);
-   assert(pb11.Width() == VSRSnbrDof + T0nbrDof + T0nbrDof);
+   assert(pb11.Height() == 3*LMnbrDof);
+   assert(pb11.Width() == 3*LMnbrDof);
    
    Prec prec(pb00, pb11);
-   assert(prec.Height() == VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof);
-   assert(prec.Width() == VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof);   
+   assert(prec.Height() == VnbrDof + InbrDof + 3*LMnbrDof);
+   assert(prec.Width() == VnbrDof + InbrDof + 3*LMnbrDof);   
 
 //PrecOperator *prec = new PrecOperator(*OuterBlock, *BA, *BB);
 

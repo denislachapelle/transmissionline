@@ -14,8 +14,6 @@ Written by Denis Lachapelle, 2025
 */
 
 #include <mfem.hpp>
-#include <mesh/submesh/submesh.hpp>
-#include <mesh/submesh/transfermap.hpp>
 #include "mytools.hpp"
 #include <iostream>
 #include <math.h>
@@ -24,38 +22,6 @@ Written by Denis Lachapelle, 2025
 using namespace std;
 using namespace mfem;
 
-double timeScaling = 1e9; // timeScaling to make all number in the same order.
-
-// Adapter: make TransferMap look like an Operator (n_sub × n_parent)
-class TransferMapOp : public Operator
-{
-private:
-  FiniteElementSpace *src_fes, *dst_fes;
-  TransferMap *Tmap;
-public:
-  TransferMapOp(FiniteElementSpace *src_fes_,
-                FiniteElementSpace *dst_fes_)
-  : Operator(dst_fes_->GetVSize(), src_fes_->GetVSize()),
-    src_fes(src_fes_), dst_fes(dst_fes_)
-    {
-       Tmap =  new TransferMap(*src_fes, *dst_fes);
-    }
-
-  void Mult(const Vector &x, Vector &y) const override
-  {
-     GridFunction gsrc(src_fes), gdst(dst_fes);
-     gsrc = x;
-     Tmap->Transfer(gsrc, gdst); // y = gy;
-  }
-  /*
-  void MultTranspose(const mfem::Vector &x, mfem::Vector &y) const override {
-    // NOTE: this uses the reverse TransferMap as an adjoint surrogate.
-    mfem::GridFunction gx(&dst_fes_), gy(&src_fes_);
-    gx = x; reverse_.Transfer(gx, gy); y = gy;
-  }
-    */
-};
-
 // PB00 preconditionner bloct 00.
 class PB00 : public BlockOperator
 {
@@ -63,7 +29,7 @@ class PB00 : public BlockOperator
       // BA Block A of the block operator of the PDE.
       BlockOperator &BA;
       // S00 and S11 are the inverse approximation of the two diagonal block of BA.
-      DSmoother  *S00, *S11;
+      DSmoother *S00, *S11;
 
    public:
       PB00(BlockOperator &BA_) :
@@ -72,8 +38,8 @@ class PB00 : public BlockOperator
    {
       
       assert(BA_.RowOffsets() == BA_.ColOffsets());
-      S00 = new DSmoother (dynamic_cast<BilinearForm&>(BA.GetBlock(0,0)).SpMat());
-      S11 = new DSmoother (dynamic_cast<BilinearForm&>(BA.GetBlock(1,1)).SpMat());
+      S00 = new DSmoother(dynamic_cast<BilinearForm&>(BA.GetBlock(0,0)).SpMat());
+      S11 = new DSmoother(dynamic_cast<BilinearForm&>(BA.GetBlock(1,1)).SpMat());
       SetBlock(0, 0, S00);
       SetBlock(1, 1, S11);
    }
@@ -91,11 +57,10 @@ class PB11 : public Operator
 
    public:
       PB11(BlockOperator &BB_, BlockOperator &BAinv_) :
-      Operator(BB_.Height(), BB_.Height()),
+      Operator(BB_.Height(), BB_.Width()),
       BB(BB_), BAinv(BAinv_)
       {
-         temp1.SetSize(BB.Width());
-         temp2.SetSize(BB.Width());
+
       }
 
       virtual void Mult(const Vector &x, Vector &y) const override
@@ -168,16 +133,15 @@ real_t SourceFunctionGaussianPulse(const Vector x)
 {
    /* gaussian pulse of tw wide centered at tc.*/
    real_t t = x(1); //1 for y-axis.
-   real_t tw = 20e-9 * timeScaling;
-   real_t tc = 50e-9 * timeScaling;
+   real_t tw = 20e-9;
+   real_t tc = 20e-9;
    if(t<2*tc) return 4.0 * t/(2.0*tc)*(1-t/(2.0*tc)) * exp(-pow(((t-tc)/tw), 2.0));
    else return 0.0;
 }
 
-real_t SourceFunctionStep(const Vector x)
+real_t SourceFunctionStep(const Vector x, real_t t)
 {
       //step.
-      real_t t = x(1); //1 for y-axis.
       real_t tau = 30e-9;
       return 1.0 - exp(-t/tau);
 }
@@ -187,7 +151,7 @@ real_t SourceFunctionSine(const Vector x, real_t t)
       return sin(2*M_PI*13e6*t);
 }
 
-FunctionCoefficient VsRsFunctionCoeff(SourceFunctionStep);
+FunctionCoefficient VsRsFunctionCoeff(SourceFunctionGaussianPulse);
 
 
 
@@ -197,7 +161,7 @@ int main(int argc, char *argv[])
    // default options...
    bool printMatrix = true; //control matrix saving to file.
    bool noSource = true; // no code for the source enabled.
-   int order = 2;
+   int order = 1;
 
    OptionsParser args(argc, argv);
    args.AddOption(&order, "-o", "--order",
@@ -225,21 +189,20 @@ int main(int argc, char *argv[])
    device.Print();
    MemoryType mt = device.GetMemoryType();
 
-   
 
    double lenght = 10;
-   int nbrSeg = 100;
+   int nbrSeg = 10;
          
    // Constants for the telegrapher’s equation for RG-58, 50 ohm.
-   double L = 250e-9 * timeScaling;  // Inductance per unit length, -9
-   double C = 100e-12 * timeScaling; // Capacitance per unit length, -12
+   double L = 250e-9;  // Inductance per unit length
+   double C = 100e-12; // Capacitance per unit length
    double R = 220e-3;  // Resistance per unit length
    double G = 1.0e-7;  // Conductance per unit length
 
    double Rs = 50.0;
    
-   real_t deltaT = 1e-9 * timeScaling;
-   real_t endTime = 100e-9 * timeScaling;
+   real_t deltaT = 1e-9;
+   real_t endTime = 100e-9;
    real_t Time = 0.0;
 //   
 // Creates 2D mesh, divided into equal intervals.
@@ -318,8 +281,8 @@ int main(int argc, char *argv[])
    
    //space for lagrange multiplier 1 relate to Vs Rs,
    //which cause boundary cnditions on I(0,y).
-   assert(order>=2);   
-   L2_FECollection *VSRSFEC = new L2_FECollection(order-1, 1);
+   
+   L2_FECollection *VSRSFEC = new L2_FECollection(order, 1);
    FiniteElementSpace *VSRSFESpace = new FiniteElementSpace(vsrsmesh, VSRSFEC);
    int VSRSnbrDof = VSRSFESpace->GetTrueVSize(); 
    cout << VSRSnbrDof << " ISFESpace degree of freedom\n";   
@@ -327,7 +290,7 @@ int main(int argc, char *argv[])
    //space for lagrange multiplier 2 relate to t initial.
    //which cause boundary cnditions of zero on V(x, 0) and I(x, 0).
    
-   L2_FECollection *T0FEC = new L2_FECollection(order-1, 1);
+   L2_FECollection *T0FEC = new L2_FECollection(order, 1);
    FiniteElementSpace *T0FESpace = new FiniteElementSpace(t0mesh, T0FEC);
    int T0nbrDof = T0FESpace->GetTrueVSize(); 
    cout << T0nbrDof << " T0FESpace degree of freedom\n";   
@@ -338,7 +301,7 @@ int main(int argc, char *argv[])
    //the forms for the voltage equation
    //BLF_dvdx implements the x dimension V space derivative,
 
-   ConstantCoefficient one(1.0), Small(0.0000000001);
+   ConstantCoefficient one(1.0), Small(0.000000001);
    BilinearForm *BLF_dvdx = new BilinearForm(VFESpace);
    BLF_dvdx->AddDomainIntegrator(new DerivativeIntegrator(one, 0)); //x direction.
    BLF_dvdx->AddDomainIntegrator(new MassIntegrator(Small));
@@ -381,19 +344,13 @@ int main(int argc, char *argv[])
    
 
    //Mixed Bilinear form VL1.
-   MixedBilinearForm *MBLF_VL1 = new MixedBilinearForm(VSRSFESpace, VSRSFESpace);
+   MixedBilinearForm *MBLF_VL1 = new MixedBilinearForm(VFESpace, VSRSFESpace);
    ConstantCoefficient oneOverRs(1.0/Rs);
    MBLF_VL1->AddDomainIntegrator(new MixedScalarMassIntegrator(oneOverRs));
    MBLF_VL1->Assemble();
    MBLF_VL1->Finalize();
    cout << MBLF_VL1->Height() << " MBLF_VL1 Height()." << endl;
    cout << MBLF_VL1->Width() << " MBLF_VL1 Width()." << endl;
-
- // TransferMap *tmap_vsrs_v =new TransferMap(VSRSFESpace, VFESpace);
- //  ProductOperator *MBLF_VL1_MAP = new ProductOperator(tmap_vsrs_v, &(MBLF_VL1->SpMat()), false, false);
-
-   
-   
    
 
    //Mixed Bilinear form IL1.
@@ -493,7 +450,7 @@ int main(int argc, char *argv[])
       
       {
          std::ofstream out("out/BBrowOffset.txt");
-         BBrowOffset->Print(out, 10);
+         BAOffset->Print(out, 10);
       }
 
       Array<int> *BBcolOffset = new Array<int>(3);
@@ -504,7 +461,7 @@ int main(int argc, char *argv[])
       
       {
          std::ofstream out("out/BBcolOffset.txt");
-         BBcolOffset->Print(out, 10);
+         BAOffset->Print(out, 10);
       }
 
       BlockOperator *BB = new BlockOperator(*BBrowOffset, *BBcolOffset);
@@ -540,7 +497,7 @@ int main(int argc, char *argv[])
 
       BlockOperator *OuterBlock = new BlockOperator(*OuterBlockOffsets);
 
-      TransposeOperator *BBT = new TransposeOperator(*BB);
+      TransposeOperator *BBT = new TransposeOperator(BB);
 
       OuterBlock->SetBlock(0, 0, BA);
       OuterBlock->SetBlock(0, 1, BBT);
@@ -555,15 +512,8 @@ int main(int argc, char *argv[])
       }
 
    //
-   //create the x vector.
+   //create the x and b vectors.
    //   
-      Vector *x = new Vector(VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof); *x = 0.0;
-      
-      Vector *b = new Vector(VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof); *b = 0.0;
-      b->AddSubVector(*LFVS, VnbrDof + InbrDof);
-
-      
-      /*
       // create the b blockvector A.
       Vector *bV = new Vector(VnbrDof); *bV = 0.0;
       Vector *bI = new Vector(InbrDof); *bI = 0.0;
@@ -576,11 +526,11 @@ int main(int argc, char *argv[])
       Vector *xI =new Vector(InbrDof); *xI = 0.0;
       BlockVector *xBlockA = new BlockVector(*BAOffset);
       xBlockA->GetBlock(0) = *xV;
-      xBlockA->GetBlock(1) = *xI;  
-      
+      xBlockA->GetBlock(1) = *xI;   
+
       // create the b block vector B.
-      Vector *bL2 = new Vector(T0nbrDof); *bL2=0.0;
-      Vector *bL3 = new Vector(T0nbrDof); *bL3=0.0;
+      Vector *bL2 = new Vector(MBLF_VL2->Height()); *bL2=0.0;
+      Vector *bL3 = new Vector(MBLF_IL3->Height()); *bL3=0.0;
       BlockVector *bBlockB = new BlockVector(*BBrowOffset);
       bBlockB->GetBlock(0) = *LFVS;
       bBlockB->GetBlock(1) = *bL2;
@@ -590,21 +540,6 @@ int main(int argc, char *argv[])
       std::ofstream out("out/bblockb.txt");
       if(printMatrix) bBlockB->Print(out, 1); // instead of Print()
       }
-
-      // create the x block vector B.const SparseMatrix *VSRSMap = dynamic_cast<const SparseMatrix*>(VSRSFESpace->GetProlongationMatrix());
-      Vector *xL1 = new Vector(VSRSnbrDof); *xL1=0.0;
-      Vector *xL2 = new Vector(T0nbrDof); *xL2=0.0;
-      Vector *xL3 = new Vector(T0nbrDof); *xL3=0.0;
-      BlockVector *xBlockB = new BlockVector(*BBrowOffset);
-      xBlockB->GetBlock(0) = *xL1;
-      xBlockB->GetBlock(1) = *xL2;
-      xBlockB->GetBlock(2) = *xL3;
-
-      {
-      std::ofstream out("out/bblockb.txt");
-      if(printMatrix) bBlockB->Print(out, 1); // instead of Print()
-      }
-
 
       // Create outer block vector b.
       BlockVector *bBlock = new BlockVector(*OuterBlockOffsets);
@@ -620,24 +555,14 @@ int main(int argc, char *argv[])
       // Create outer block vector x.
       BlockVector *xBlock = new BlockVector(*OuterBlockOffsets);
       xBlock->GetBlock(0) = *xBlockA;
-      xBlock->GetBlock(1) = *xBlockB;
-*/
 
 //
 // Prepare the preconditionner...
 //
 
    PB00 pb00(*BA);
-   assert(pb00.Height() == VnbrDof + InbrDof);
-   assert(pb00.Width() == VnbrDof + InbrDof);
-   
    PB11 pb11(*BB, pb00);
-   assert(pb11.Height() == VSRSnbrDof + T0nbrDof + T0nbrDof);
-   assert(pb11.Width() == VSRSnbrDof + T0nbrDof + T0nbrDof);
-   
    Prec prec(pb00, pb11);
-   assert(prec.Height() == VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof);
-   assert(prec.Width() == VnbrDof + InbrDof + VSRSnbrDof + T0nbrDof + T0nbrDof);   
 
 //PrecOperator *prec = new PrecOperator(*OuterBlock, *BA, *BB);
 
@@ -672,14 +597,14 @@ int main(int argc, char *argv[])
    if(1)
    {
       GMRESSolver solver;
-      solver.SetAbsTol(1e-15);
+      solver.SetAbsTol(1e-32);
       solver.SetRelTol(1e-8);
       solver.SetMaxIter(5000);
       solver.SetPrintLevel(1);
-      solver.SetKDim(30);
+      solver.SetKDim(5000);
       solver.SetOperator(*OuterBlock);
-      //solver.SetPreconditioner(prec);
-      solver.Mult(*b, *x);
+      solver.SetPreconditioner(prec);
+      solver.Mult(*bBlock, *xBlock);
    }
 
    if(0)
@@ -691,16 +616,16 @@ int main(int argc, char *argv[])
    solver.SetOperator(*OuterBlock);
    //solver.SetPreconditioner(*prec);
    solver.SetPrintLevel(1);
-   solver.Mult(*b, *x);
+   solver.Mult(*bBlock, *xBlock);
    }
 
-   GridFunction *VGF = new GridFunction(VFESpace, *x, 0);
+   GridFunction *VGF = new GridFunction(VFESpace, *xV, 0);
    Glvis(mesh, VGF, "Voltage");
 
-   GridFunction *IGF = new GridFunction(IFESpace, *x, VnbrDof);
+   GridFunction *IGF = new GridFunction(IFESpace, *xI, 0);
    Glvis(mesh, IGF, "Current");
 
-   return 0;
+   return 1;
 }
 
 
