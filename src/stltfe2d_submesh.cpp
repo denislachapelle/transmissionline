@@ -22,7 +22,7 @@ Written by Denis Lachapelle, 2025
 using namespace std;
 using namespace mfem;
 
-real_t timeScaling = 1e9;
+real_t timeScaling = 1e9;  // make time and space axis the same size.
 
 // Matrix-free wrapper: 
 //  y_lambda = Bs * ( T_p2s * x_parent )      // via Mult
@@ -74,28 +74,6 @@ private:
 };
 
 
-// PB00 preconditionner bloct 00.
-class PB00 : public BlockOperator
-{
-   private:
-      // BA Block A of the block operator of the PDE.
-      BlockOperator &BA;
-      // S00 and S11 are the inverse approximation of the two diagonal block of BA.
-      DSmoother *S00, *S11;
-
-   public:
-      PB00(BlockOperator &BA_) :
-      BlockOperator(BA_.RowOffsets(), BA_.ColOffsets()),
-      BA(BA_)
-   {
-      assert(BA_.RowOffsets() == BA_.ColOffsets());
-      S00 = new DSmoother(dynamic_cast<MixedBilinearForm&>(BA.GetBlock(0,0)).SpMat(), 0); //row sum
-      S11 = new DSmoother(dynamic_cast<MixedBilinearForm&>(BA.GetBlock(1,1)).SpMat(), 0); // row sum.
-      SetBlock(0, 0, S00);
-      SetBlock(1, 1, S11);
-   }
-
-};
 
 // PB11 preconditioner block 11.
 class PB11 : public Operator
@@ -103,7 +81,8 @@ class PB11 : public Operator
    private:
       // BB Block operator of the lagrange multiplier.
       // BAinv estimate of the inverse of BA computed with class PB00.
-      BlockOperator &BB, &BAinv;
+      BlockOperator &BB;
+      Operator &BAinv;
       mutable Vector temp1, temp2;
 
       TransposeOperator *BBT;
@@ -114,7 +93,7 @@ class PB11 : public Operator
          
 
    public:
-      PB11(BlockOperator &BB_, BlockOperator &BAinv_) :
+      PB11(BlockOperator &BB_, Operator &BAinv_) :
       Operator(BB_.Height(), BB_.Height()),
       BB(BB_), BAinv(BAinv_)
       {
@@ -122,11 +101,12 @@ class PB11 : public Operator
          BBT = new TransposeOperator(BB);
          AM1BT = new ProductOperator(&BAinv, BBT, false, false);
          BAM1BT = new ProductOperator(&BB, AM1BT, false, false);
+
          solver = new GMRESSolver();
-         solver->SetAbsTol(1e-10);
-         solver->SetRelTol(1e-4);
-         solver->SetMaxIter(5000);
-         solver->SetPrintLevel(1);
+         solver->SetAbsTol(0);
+         solver->SetRelTol(1e-2);
+         solver->SetMaxIter(50);
+         solver->SetPrintLevel(0);
          solver->SetKDim(50);
          solver->SetOperator(*BAM1BT);
       }
@@ -138,49 +118,6 @@ class PB11 : public Operator
       }
 };
 
-class Prec : public Solver
-{
-private:
-   PB00 &pb00;
-   PB11 &pb11;
-   BlockOperator *OuterBlock;
-   
-public:
-   Prec(PB00 &pb00_, PB11 &pb11_)
-      : Solver(pb00_.Height()+pb11_.Height(), pb00_.Width()+pb11_.Width()),
-        pb00(pb00_), pb11(pb11_)
-   {
-      Array<int> rowOffsets(3);
-      rowOffsets[0]=0;
-      rowOffsets[1]=pb00.Height();
-      rowOffsets[2]=pb11.Height();
-      rowOffsets.PartialSum();
-
-      Array<int> colOffsets(3);
-      colOffsets[0]=0;
-      colOffsets[1]=pb00.Width();
-      colOffsets[2]=pb11.Width();
-      colOffsets.PartialSum();
-
-      OuterBlock = new BlockOperator(rowOffsets, colOffsets);
-      OuterBlock->SetBlock(0, 0, &pb00);
-      OuterBlock->SetBlock(1, 1, &pb11);
-
-   }
-
-   void SetOperator(const Operator &op) 
-   {
-      // Typically unused for a fixed preconditioner; keep for interface.
-      MFEM_VERIFY(op.Height() == Height() && op.Width() == Width(),
-                  "Prec::SetOperator size mismatch.");
-
-   }
-  
-   virtual void Mult(const Vector &x, Vector &y) const override
-   {
-      OuterBlock->Mult(x, y);
-   }
-};
 
 
 void GetDiagFromOperator(const Operator &op, Vector &diag)
@@ -415,7 +352,7 @@ int main(int argc, char *argv[])
    //the forms for the equation with dV/dx.
    //BLF_dvdx implements the x dimension V space derivative,
 
-   ConstantCoefficient one(1.0), Small(1000);
+   ConstantCoefficient one(1.0), Small(1e-4);
    Vector xDir(2); xDir = 0.0; xDir(0) = 1.0;
    VectorConstantCoefficient xDirCoeff(xDir);
    MixedBilinearForm *MBLF_dvdx = new MixedBilinearForm(VFESpace /*trial*/, VFESpace /*test*/);
@@ -581,13 +518,13 @@ int main(int argc, char *argv[])
          BAcolOffset->Print(out, 10);
       }
 
-      BlockOperator *BA = new BlockOperator(*BArowOffset, *BAcolOffset);
+      BlockMatrix *BA = new BlockMatrix(*BArowOffset, *BAcolOffset);
 
-      BA->SetBlock(0, 0, MBLF_dvdx);
-      BA->SetBlock(0, 1, MBLF_IV);
+      BA->SetBlock(0, 0, &(MBLF_dvdx->SpMat()));
+      BA->SetBlock(0, 1, &(MBLF_IV->SpMat()));
 
-      BA->SetBlock(1, 0, MBLF_VI);
-      BA->SetBlock(1, 1, MBLF_didx);
+      BA->SetBlock(1, 0, &(MBLF_VI->SpMat()));
+      BA->SetBlock(1, 1, &(MBLF_didx->SpMat()));
 
       
       cout << BA->Height() << " BA->Height()" << endl;
@@ -709,15 +646,29 @@ int main(int argc, char *argv[])
 // Prepare the preconditionner...
 //
 
-   PB00 pb00(*BA);
-   assert(pb00.Height() == VnbrDof + InbrDof);
-   assert(pb00.Width() == VnbrDof + InbrDof);
+   //PB00 pb00(BA);
+   //assert(pb00.Height() == VnbrDof + InbrDof);
+   //assert(pb00.Width() == VnbrDof + InbrDof);
+
+   if(0)
+   {
+      DSmoother *pb00 = new DSmoother(*(BA->CreateMonolithic()), 0);
+   }
    
-   PB11 pb11(*BB, pb00);
+   SparseMatrix *BAmono = BA->CreateMonolithic();
+   Operator *pb00 = new UMFPackSolver(*BAmono);
+
+
+   
+   PB11 pb11(*BB, *pb00);
    assert(pb11.Height() == LM1nbrDof + LM2nbrDof + LM3nbrDof);
    assert(pb11.Width() == LM1nbrDof + LM2nbrDof + LM3nbrDof);
 
-   Prec prec(pb00, pb11);
+   //Prec prec(pb00, pb11);
+
+   BlockDiagonalPreconditioner P(*OuterBlockOffsets);
+   P.SetDiagonalBlock(0, pb00);
+   P.SetDiagonalBlock(1, &pb11);
 
 
 //
@@ -725,14 +676,15 @@ int main(int argc, char *argv[])
 //
    if(1)
    {
-      GMRESSolver solver;
-      solver.SetAbsTol(1e-8);
-      solver.SetRelTol(1e-8);
-      solver.SetMaxIter(500);
+      FGMRESSolver solver;
+     // solver.SetFlexible(true);
+      solver.SetAbsTol(0);
+      solver.SetRelTol(1e-6);
+      solver.SetMaxIter(5000);
       solver.SetPrintLevel(1);
       solver.SetKDim(50);
       solver.SetOperator(*OuterBlock);
-      //solver.SetPreconditioner(prec);
+      solver.SetPreconditioner(P);
       solver.Mult(*bBlock, *xBlock);
       cout << solver.GetFinalRelNorm() << " GetFinalRelNorm" << endl;
    }
@@ -740,7 +692,7 @@ int main(int argc, char *argv[])
    if(0)
    {
       MINRESSolver solver;
-      solver.SetAbsTol(1e-20);
+      solver.SetAbsTol(0.0);
       solver.SetRelTol(1e-8);
       solver.SetMaxIter(5000);
       solver.SetOperator(*OuterBlock);
