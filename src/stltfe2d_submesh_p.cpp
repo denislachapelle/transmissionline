@@ -24,6 +24,70 @@ using namespace mfem;
 
 real_t timeScaling = 1e9;  // make time and space axis the same size.
 
+#include <mfem.hpp>
+using namespace mfem;
+
+/*
+class BlockDiagAMG : public Solver
+{
+public:
+   BlockDiagAMG(const Array<int> &offsets,
+                HypreParMatrix &A00,
+                HypreParMatrix &A11)
+      : Solver(offsets.Last()),
+        offsets_(offsets),
+        amg0_(&A00), amg1_(&A11),
+        x0_(offsets[1]-offsets[0]),
+        x1_(offsets[2]-offsets[1]),
+        y0_(offsets[1]-offsets[0]),
+        y1_(offsets[2]-offsets[1])
+   {
+      // Configure each BoomerAMG as you like
+      amg0_.SetPrintLevel(0);
+      amg0_.SetSystemsOptions(1);  // if A00 is vector-valued SPD; else omit
+      amg0_.SetCoarsenType(8);     // HMIS coarsening (example)
+      amg0_.SetRelaxType(6);       // Symmetric SOR/Jacobi (example)
+
+      amg1_.SetPrintLevel(0);
+      amg1_.SetCoarsenType(8);
+      amg1_.SetRelaxType(6);
+
+      // Recommended: amg0_.SetOperator(A00); amg1_.SetOperator(A11);  // done by constructors
+
+      // This preconditioner is square and maps size N -> N
+   }
+
+   void Mult(const Vector &x, Vector &y) const override
+   {
+      // Split input into blocks
+      Vector x0(const_cast<double*>(x.GetData()+offsets_[0]), offsets_[1]-offsets_[0]);
+      Vector x1(const_cast<double*>(x.GetData()+offsets_[1]), offsets_[2]-offsets_[1]);
+
+      // Apply AMG per block
+      amg0_.Mult(x0, y0_);
+      amg1_.Mult(x1, y1_);
+
+      // Stitch output
+      y.SetSize(offsets_.Last());
+      y.Range(offsets_[0], offsets_[1]-offsets_[0]) = y0_;
+      y.Range(offsets_[1], offsets_[2]-offsets_[1]) = y1_;
+   }
+
+   // Optional: expose SetOperator to rebuild AMG after updates
+   void SetOperators(HypreParMatrix &A00, HypreParMatrix &A11)
+   {
+      amg0_.SetOperator(A00);
+      amg1_.SetOperator(A11);
+   }
+
+private:
+   const Array<int> &offsets_;
+   mutable HypreBoomerAMG amg0_, amg1_;
+   mutable Vector x0_, x1_, y0_, y1_;
+};
+*/
+
+
 // Matrix-free wrapper: 
 //  y_lambda = Bs * ( T_p2s * x_parent )      // via Mult
 //  y_parent = T^T * ( Bs^T * y_lambda )  // via MultTranspose
@@ -31,10 +95,10 @@ real_t timeScaling = 1e9;  // make time and space axis the same size.
 class SubmeshOperator : public Operator
 {
 public:
-  SubmeshOperator(const Operator &Bs_, //operator on submesh.
-                    FiniteElementSpace &fes_parent,
-                    FiniteElementSpace &fes_sub,
-                    FiniteElementSpace &fes_lambda)
+  SubmeshOperator(const HypreParMatrix &Bs_, //operator on submesh.
+                    ParFiniteElementSpace &fes_parent,
+                    ParFiniteElementSpace &fes_sub,
+                    ParFiniteElementSpace &fes_lambda)
   : Operator(fes_lambda.GetTrueVSize(), fes_parent.GetTrueVSize()),
     Bs(Bs_),
     T_p2s(&fes_parent, &fes_sub), // TransferMap parent to submesh.
@@ -66,10 +130,10 @@ public:
   }
 
 private:
-  const Operator &Bs;
-  mutable TransferMap T_p2s;     // parent -> submesh
-  mutable TransferMap T_s2p;     // submesh -> parent (acts like T^T)
-  mutable GridFunction GF1p, GF2s, GF3l, GF4p;
+  mutable HypreParMatrix Bs;
+  mutable ParTransferMap T_p2s;     // parent -> submesh
+  mutable ParTransferMap T_s2p;     // submesh -> parent (acts like T^T)
+  mutable ParGridFunction GF1p, GF2s, GF3l, GF4p;
   
 };
 
@@ -106,7 +170,7 @@ class PB11 : public Operator
          solver->SetAbsTol(0);
          solver->SetRelTol(1e-2);
          solver->SetMaxIter(50);
-         solver->SetPrintLevel(0);
+         solver->SetPrintLevel(1);
          solver->SetKDim(50);
          solver->SetOperator(*BAM1BT);
       }
@@ -166,8 +230,12 @@ int main(int argc, char *argv[])
 
    // default options...
    bool printMatrix = false; //control matrix saving to file.
-   bool noSource = true; // no code for the source enabled.
    int order = 1;
+
+    // 1. Initialize MPI and HYPRE.
+   Mpi::Init(argc, argv);
+   int myid = Mpi::WorldRank();
+   Hypre::Init();
 
    OptionsParser args(argc, argv);
    args.AddOption(&order, "-o", "--order",
@@ -194,6 +262,7 @@ int main(int argc, char *argv[])
    Device device("cpu");
    device.Print();
    MemoryType mt = device.GetMemoryType();
+   (void)mt;
 
 
    double lenght = 100;
@@ -209,8 +278,6 @@ int main(int argc, char *argv[])
    
    int nbrTimeSeg = 100;
    real_t endTime = 100e-9 * timeScaling;
-   real_t deltaT = endTime/nbrTimeSeg;
-   real_t Time = 0.0;
 //   
 // Creates 2D mesh, divided into equal intervals.
 //
@@ -219,14 +286,25 @@ int main(int argc, char *argv[])
                                   Element::QUADRILATERAL, false, lenght, endTime, false);
    int dim = mesh->Dimension();
    assert(dim==2); //this software works only for dimension 2.
-   mesh->PrintInfo();
+   
+   if (Mpi::Root())
+   {
+      mesh->PrintInfo();
+   }
+   
+
+   // 4. Define a parallel mesh by a partitioning of the serial mesh. Refine
+   //    this mesh once in parallel to increase the resolution.
+   ParMesh *pmesh = new ParMesh(MPI_COMM_WORLD, *mesh);
+   
 
    int nbrEl = mesh->GetNE();
    assert(nbrEl == nbrLengthSeg * nbrTimeSeg);
 
+   if (Mpi::Root() && printMatrix)
    {
       std::ofstream out("out/meshprint.txt");
-      if(printMatrix) mesh->Print(out);
+      mesh->Print(out);
    }
 
    //
@@ -234,19 +312,20 @@ int main(int argc, char *argv[])
    //
    Array<int> *vsrs_bdr_attrs = new Array<int>;
    vsrs_bdr_attrs->Append(4); // Attribute ID=4 for the left boundary.
-   SubMesh *vsrsmesh = new SubMesh(SubMesh::CreateFromBoundary(*mesh, *vsrs_bdr_attrs));
+   ParSubMesh *vsrsmesh = new ParSubMesh(ParSubMesh::CreateFromBoundary(*pmesh, *vsrs_bdr_attrs));
    //set BdrAttribute to 0 meaning they are not boundary, necessary for LFVS.
-   for (int i = 0; i < vsrsmesh->GetNBE(); i++)
-   {
-        vsrsmesh->SetBdrAttribute(i, 0);
-   }
-   vsrsmesh->FinalizeMesh();
-   vsrsmesh->PrintInfo();
+   //for (int i = 0; i < vsrsmesh->GetNBE(); i++)
+   //{
+   //     vsrsmesh->SetBdrAttribute(i, 0);
+   //}
+   vsrsmesh->FinalizeMesh(0, true);
+   if (Mpi::Root()) vsrsmesh->PrintInfo();
    assert(vsrsmesh->GetNE() == nbrTimeSeg);
 
+   if (Mpi::Root() && printMatrix)
    {
       std::ofstream out("out/vsrsmeshprint.txt");
-      if(printMatrix) vsrsmesh->Print(out);
+      vsrsmesh->Print(out);
    }
   
    //
@@ -254,19 +333,20 @@ int main(int argc, char *argv[])
    //
    Array<int> *t0_bdr_attrs = new Array<int>;
    t0_bdr_attrs->Append(1); // Attribute ID=1 for the bottom boundary.
-   SubMesh *t0mesh = new SubMesh(SubMesh::CreateFromBoundary(*mesh, *t0_bdr_attrs));
+   ParSubMesh *t0mesh = new ParSubMesh(ParSubMesh::CreateFromBoundary(*pmesh, *t0_bdr_attrs));
    //set BdrAttribute to 0 meaning they are not boundary.
-   for (int i = 0; i < t0mesh->GetNBE(); i++)
-   {
-        t0mesh->SetBdrAttribute(i, 0);
-   }
+   //for (int i = 0; i < t0mesh->GetNBE(); i++)
+   //{
+   //    t0mesh->SetBdrAttribute(i, 0);
+   //}
    t0mesh->FinalizeMesh();
-   t0mesh->PrintInfo();
+   if (Mpi::Root()) t0mesh->PrintInfo();
    assert(t0mesh->GetNE() == nbrLengthSeg);
 
+   if (Mpi::Root() && printMatrix)
    {
       std::ofstream out("out/t0meshprint.txt");
-      if(printMatrix) t0mesh->Print(out);
+      t0mesh->Print(out);
    }
   
    //
@@ -275,66 +355,22 @@ int main(int argc, char *argv[])
 
    //space for voltage.
    H1_FECollection *VFEC = new H1_FECollection(order, 2);
-   FiniteElementSpace *VFESpace = new FiniteElementSpace(mesh, VFEC);
+   ParFiniteElementSpace *VFESpace = new ParFiniteElementSpace(pmesh, VFEC);
    int VnbrDof = VFESpace->GetTrueVSize(); 
-   cout << VnbrDof << " VFESpace degree of freedom\n";  
+   if (Mpi::Root()) cout << VnbrDof << " VFESpace degree of freedom\n";  
 
    
 
    //space for current.
-   L2_FECollection *IFEC = new L2_FECollection(order, 2, BasisType::GaussLobatto);
-   FiniteElementSpace *IFESpace = new FiniteElementSpace(mesh, IFEC);
+   H1_FECollection *IFEC = new H1_FECollection(order, 2);
+   ParFiniteElementSpace *IFESpace = new ParFiniteElementSpace(pmesh, IFEC);
    int InbrDof = IFESpace->GetTrueVSize(); 
-   cout << InbrDof << " IFESpace degree of freedom\n";   
+   if (Mpi::Root()) cout << InbrDof << " IFESpace degree of freedom\n";   
+   if (Mpi::Root() && printMatrix)
    {
       std::ofstream out("out/ifespace.txt");
-      if(printMatrix) IFESpace->Save(out);
+      IFESpace->Save(out);
    }
-
-   //    Determine the list of Voltage essential boundary dofs.
-   Array<int> V_ess_tdof_list;
-   assert(mesh->bdr_attributes.Size() == 4);
-   if (mesh->bdr_attributes.Size())
-   {
-      Array<int> V_ess_bdr(mesh->bdr_attributes.Max());
-      V_ess_bdr = 0;
-      V_ess_bdr[0] = 1;
-      V_ess_bdr[1] = 1;
-      V_ess_bdr[2] = 1;   
-      VFESpace->GetEssentialTrueDofs(V_ess_bdr, V_ess_tdof_list);
-   }
-
-   //    Determine the list of Current essential boundary dofs.
-   Array<int> I_ess_tdof_list;
-   assert(mesh->bdr_attributes.Size() == 4);
-   if (mesh->bdr_attributes.Size())
-   {
-      Array<int> I_ess_bdr(mesh->bdr_attributes.Max());
-      I_ess_bdr = 0;
-      I_ess_bdr[0] = 1;
-      I_ess_bdr[1] = 1;
-      I_ess_bdr[2] = 1;   
-      IFESpace->GetEssentialTrueDofs(I_ess_bdr, I_ess_tdof_list);
-   }
-
-
-   Array<int> combined_ess_tdof_list;
-   combined_ess_tdof_list.Append(V_ess_tdof_list);
-   combined_ess_tdof_list.Append(I_ess_tdof_list);
-   for(int i = V_ess_tdof_list.Size(); i < V_ess_tdof_list.Size() + I_ess_tdof_list.Size(); i++)
-   {
-      combined_ess_tdof_list[i] += VnbrDof;  
-   }
-
-   if(printMatrix)
-   {
-      std::ofstream out("out/combined_ess_tdef_list.txt");
-      if(printMatrix) combined_ess_tdof_list.Print(out, 1);
-   } 
-   
-
-
-
 
 
    //The next three spaces are for application of voltage.
@@ -342,21 +378,21 @@ int main(int argc, char *argv[])
    //which cause boundary cnditions on I(0,y).
    
    H1_FECollection *LM1FEC = new H1_FECollection(order, 1);
-   FiniteElementSpace *LM1FESpace = new FiniteElementSpace(vsrsmesh, LM1FEC);
+   ParFiniteElementSpace *LM1FESpace = new ParFiniteElementSpace(vsrsmesh, LM1FEC);
    int LM1nbrDof = LM1FESpace->GetTrueVSize(); 
-   cout << LM1nbrDof << " LM1FESpace degree of freedom\n";
+   if (Mpi::Root()) cout << LM1nbrDof << " LM1FESpace degree of freedom\n";
 
    //space for voltage over vsrs submesh.
    H1_FECollection *VvsrsFEC = new H1_FECollection(order, 1);
-   FiniteElementSpace *VvsrsFESpace = new FiniteElementSpace(vsrsmesh, VvsrsFEC);
+   ParFiniteElementSpace *VvsrsFESpace = new ParFiniteElementSpace(vsrsmesh, VvsrsFEC);
    int VvsrsnbrDof = VvsrsFESpace->GetTrueVSize(); 
-   cout << VvsrsnbrDof << " VFvsrsESpace degree of freedom\n";   
+   if (Mpi::Root()) cout << VvsrsnbrDof << " VFvsrsESpace degree of freedom\n";   
 
    //space for current over vsrs submesh. .
-   L2_FECollection *IvsrsFEC = new L2_FECollection(order, 1, BasisType::GaussLobatto);
-   FiniteElementSpace *IvsrsFESpace = new FiniteElementSpace(vsrsmesh, IvsrsFEC);
+   H1_FECollection *IvsrsFEC = new H1_FECollection(order, 1);
+   ParFiniteElementSpace *IvsrsFESpace = new ParFiniteElementSpace(vsrsmesh, IvsrsFEC);
    int IvsrsnbrDof = IvsrsFESpace->GetTrueVSize(); 
-   cout << IvsrsnbrDof << " IvsrsFESpace degree of freedom\n";   
+   if (Mpi::Root()) cout << IvsrsnbrDof << " IvsrsFESpace degree of freedom\n";   
    {
       std::ofstream out("out/ivsrsfespace.txt");
       if(printMatrix) IvsrsFESpace->Save(out);
@@ -368,30 +404,30 @@ int main(int argc, char *argv[])
    //which cause boundary cnditions of zero on V(x, 0)
       
    H1_FECollection *LM2FEC = new H1_FECollection(order, 1);
-   FiniteElementSpace *LM2FESpace = new FiniteElementSpace(t0mesh, LM2FEC);
+   ParFiniteElementSpace *LM2FESpace = new ParFiniteElementSpace(t0mesh, LM2FEC);
    int LM2nbrDof = LM2FESpace->GetTrueVSize(); 
-   cout << LM2nbrDof << " LM2FESpace degree of freedom\n"; 
+   if (Mpi::Root()) cout << LM2nbrDof << " LM2FESpace degree of freedom\n"; 
 
    //space for voltage over t0mesh submesh.
    H1_FECollection *Vt0FEC = new H1_FECollection(order, 1);
-   FiniteElementSpace *Vt0FESpace = new FiniteElementSpace(t0mesh, Vt0FEC);
+   ParFiniteElementSpace *Vt0FESpace = new ParFiniteElementSpace(t0mesh, Vt0FEC);
    int Vt0nbrDof = Vt0FESpace->GetTrueVSize(); 
-   cout << Vt0nbrDof << " Vt0FESpace degree of freedom\n"; 
+   if (Mpi::Root()) cout << Vt0nbrDof << " Vt0FESpace degree of freedom\n"; 
  
    //the next two spaces are for LM3 applying initial condition I=0.0 at y=0, which is time.
    //space for lagrange multiplier 3 relate to t initial.
    //which cause boundary cnditions of zero on VIx, 0)
    
    H1_FECollection *LM3FEC = new H1_FECollection(order, 1);
-   FiniteElementSpace *LM3FESpace = new FiniteElementSpace(t0mesh, LM3FEC);
+   ParFiniteElementSpace *LM3FESpace = new ParFiniteElementSpace(t0mesh, LM3FEC);
    int LM3nbrDof = LM3FESpace->GetTrueVSize(); 
-   cout << LM3nbrDof << " LM3FESpace degree of freedom\n";   
+   if (Mpi::Root()) cout << LM3nbrDof << " LM3FESpace degree of freedom\n";   
 
    //space for current over t0mesh submesh.
-   L2_FECollection *It0FEC = new L2_FECollection(order, 1, BasisType::GaussLobatto);
-   FiniteElementSpace *It0FESpace = new FiniteElementSpace(t0mesh, It0FEC);
+   H1_FECollection *It0FEC = new H1_FECollection(order, 1, BasisType::GaussLobatto);
+   ParFiniteElementSpace *It0FESpace = new ParFiniteElementSpace(t0mesh, It0FEC);
    int It0nbrDof = It0FESpace->GetTrueVSize(); 
-   cout << It0nbrDof << " It0FESpace degree of freedom\n";  
+   if (Mpi::Root()) cout << It0nbrDof << " It0FESpace degree of freedom\n";  
 
 
 //
@@ -403,14 +439,15 @@ int main(int argc, char *argv[])
    ConstantCoefficient one(1.0), Small(1e-4);
    Vector xDir(2); xDir = 0.0; xDir(0) = 1.0;
    VectorConstantCoefficient xDirCoeff(xDir);
-   MixedBilinearForm *MBLF_dvdx = new MixedBilinearForm(VFESpace /*trial*/, VFESpace /*test*/);
+   ParMixedBilinearForm *MBLF_dvdx = new ParMixedBilinearForm(VFESpace /*trial*/, VFESpace /*test*/);
    MBLF_dvdx->AddDomainIntegrator(new MixedDirectionalDerivativeIntegrator(xDirCoeff)); //x direction.
    //MBLF_dvdx->AddDomainIntegrator(new DerivativeIntegrator(one, 0)); //x direction.
    MBLF_dvdx->AddDomainIntegrator(new MixedScalarMassIntegrator(Small));
    MBLF_dvdx->Assemble();
    MBLF_dvdx->Finalize();
-   cout << MBLF_dvdx->Height() << " MBLF_dvdx Height()." << endl;
-   cout << MBLF_dvdx->Width() << " MBLF_dvdx Width()." << endl;
+   HypreParMatrix *pMBLF_dvdx = MBLF_dvdx->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_dvdx->Height() << " MBLF_dvdx Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_dvdx->Width() << " MBLF_dvdx Width()." << endl;
    assert(MBLF_dvdx->Height() == VnbrDof && MBLF_dvdx->Width() == VnbrDof);
 
    //MBLF_IV implements the y dimension I derivative which is time and
@@ -418,27 +455,29 @@ int main(int argc, char *argv[])
    ConstantCoefficient CC_R(R);
    Vector vLy(2); vLy = 0.0; vLy(1) = L;
    VectorConstantCoefficient CC_Ly(vLy);
-   MixedBilinearForm *MBLF_IV = new MixedBilinearForm(IFESpace /*trial*/, VFESpace /*test*/);
+   ParMixedBilinearForm *MBLF_IV = new ParMixedBilinearForm(IFESpace /*trial*/, VFESpace /*test*/);
    MBLF_IV->AddDomainIntegrator(new MixedDirectionalDerivativeIntegrator(CC_Ly));
    MBLF_IV->AddDomainIntegrator(new MixedScalarMassIntegrator(CC_R));
    MBLF_IV->Assemble();
    MBLF_IV->Finalize();
-   cout << MBLF_IV->Height() << " MBLF_IV Height()." << endl;
-   cout << MBLF_IV->Width() << " MBLF_IV Width()." << endl;
+   HypreParMatrix *pMBLF_IV = MBLF_IV->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_IV->Height() << " MBLF_IV Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_IV->Width() << " MBLF_IV Width()." << endl;
    assert(MBLF_IV->Height() == VnbrDof);
    assert(MBLF_IV->Width() == InbrDof);
    
    
    //the forms for the equation with dI/dx.
    //MBLF_didx implements the x dimension I space derivative,
-   MixedBilinearForm *MBLF_didx = new MixedBilinearForm(IFESpace /*trial*/, IFESpace /*test*/);
+   ParMixedBilinearForm *MBLF_didx = new ParMixedBilinearForm(IFESpace /*trial*/, IFESpace /*test*/);
    MBLF_didx->AddDomainIntegrator(new MixedDirectionalDerivativeIntegrator(xDirCoeff)); //x direction.
    //MBLF_didx->AddDomainIntegrator(new DerivativeIntegrator(one, 0)); //x direction.
    MBLF_didx->AddDomainIntegrator(new MixedScalarMassIntegrator(Small));
    MBLF_didx->Assemble();
    MBLF_didx->Finalize();
-   cout << MBLF_didx->Height() << " MBLF_didx Height()." << endl;
-   cout << MBLF_didx->Width() << " MBLF_didx Width()." << endl;
+   HypreParMatrix *pMBLF_didx = MBLF_didx->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_didx->Height() << " MBLF_didx Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_didx->Width() << " MBLF_didx Width()." << endl;
    assert(MBLF_didx->Height() == InbrDof && MBLF_didx->Width() == InbrDof );
 
    //MBLF_VI implements the y dimension V derivative which is time and
@@ -446,46 +485,49 @@ int main(int argc, char *argv[])
    ConstantCoefficient CC_G(G);
    Vector vCy(2); vCy = 0.0; vCy(1) = C;
    VectorConstantCoefficient CC_Cy(vCy);
-   MixedBilinearForm *MBLF_VI = new MixedBilinearForm(VFESpace, IFESpace);
+   ParMixedBilinearForm *MBLF_VI = new ParMixedBilinearForm(VFESpace, IFESpace);
    MBLF_VI->AddDomainIntegrator(new MixedDirectionalDerivativeIntegrator(CC_Cy));
    MBLF_VI->AddDomainIntegrator(new MixedScalarMassIntegrator(CC_G));
    MBLF_VI->Assemble();
    MBLF_VI->Finalize();
-   cout << MBLF_VI->Height() << " MBLF_VI Height()." << endl;
-   cout << MBLF_VI->Width() << " MBLF_VI Width()." << endl;
+   HypreParMatrix *pMBLF_VI = MBLF_VI->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_VI->Height() << " MBLF_VI Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_VI->Width() << " MBLF_VI Width()." << endl;
    assert(MBLF_VI->Height() == InbrDof);
    assert(MBLF_VI->Width() == VnbrDof);
 
    //Mixed Bilinear form VL1.
-   MixedBilinearForm *MBLF_VL1 = new MixedBilinearForm(VvsrsFESpace /*trial*/, LM1FESpace /*test*/);
+   ParMixedBilinearForm *MBLF_VL1 = new ParMixedBilinearForm(VvsrsFESpace /*trial*/, LM1FESpace /*test*/);
    ConstantCoefficient oneOverRs(1.0/Rs);
    MBLF_VL1->AddDomainIntegrator(new MixedScalarMassIntegrator(oneOverRs));
    MBLF_VL1->Assemble();
    MBLF_VL1->Finalize();
-   cout << MBLF_VL1->Height() << " MBLF_VL1 Height()." << endl;
-   cout << MBLF_VL1->Width() << " MBLF_VL1 Width()." << endl;
+   HypreParMatrix *pMBLF_VL1 = MBLF_VL1->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_VL1->Height() << " MBLF_VL1 Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_VL1->Width() << " MBLF_VL1 Width()." << endl;
    assert(MBLF_VL1->Height() == LM1nbrDof);
    assert(MBLF_VL1->Width() == VvsrsnbrDof);
    //create the submesh to parent operators for the Lagrange multiplier.
-   SubmeshOperator *MBLF_VL1_map = new SubmeshOperator(MBLF_VL1->SpMat(), *VFESpace, *VvsrsFESpace, *LM1FESpace);
-   cout << MBLF_VL1_map->Height() << " MBLF_VL1_map Height()." << endl;
-   cout << MBLF_VL1_map->Width() << " MBLF_VL1_map Width()." << endl;
+   SubmeshOperator *MBLF_VL1_map = new SubmeshOperator(*pMBLF_VL1, *VFESpace, *VvsrsFESpace, *LM1FESpace);
+   if (Mpi::Root())  cout  << MBLF_VL1_map->Height() << " MBLF_VL1_map Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_VL1_map->Width() << " MBLF_VL1_map Width()." << endl;
    assert(MBLF_VL1_map->Height() == LM1nbrDof);
    assert(MBLF_VL1_map->Width() == VnbrDof);
 
    //Mixed Bilinear form IL1.
-   MixedBilinearForm *MBLF_IL1 = new MixedBilinearForm(IvsrsFESpace /*trial*/, LM1FESpace /*test*/);
+   ParMixedBilinearForm *MBLF_IL1 = new ParMixedBilinearForm(IvsrsFESpace /*trial*/, LM1FESpace /*test*/);
    MBLF_IL1->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
    MBLF_IL1->Assemble();
    MBLF_IL1->Finalize();
-   cout << MBLF_IL1->Height() << " MBLF_IL1 Height()." << endl;
-   cout << MBLF_IL1->Width() << " MBLF_IL1 Width()." << endl;
+   HypreParMatrix *pMBLF_IL1 = MBLF_IL1->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_IL1->Height() << " MBLF_IL1 Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_IL1->Width() << " MBLF_IL1 Width()." << endl;
    assert(MBLF_IL1->Height() == LM1nbrDof);
    assert(MBLF_IL1->Width() == IvsrsnbrDof);
    //create the submesh tp parent operators for the Lagrange multiplier.
-   SubmeshOperator *MBLF_IL1_map = new SubmeshOperator(MBLF_IL1->SpMat(), *IFESpace, *IvsrsFESpace, *LM1FESpace);
-   cout << MBLF_IL1_map->Height() << " MBLF_IL1_map Height()." << endl;
-   cout << MBLF_IL1_map->Width() << " MBLF_IL1_map Width()." << endl;
+   SubmeshOperator *MBLF_IL1_map = new SubmeshOperator(*pMBLF_IL1, *IFESpace, *IvsrsFESpace, *LM1FESpace);
+   if (Mpi::Root())  cout  << MBLF_IL1_map->Height() << " MBLF_IL1_map Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_IL1_map->Width() << " MBLF_IL1_map Width()." << endl;
    assert(MBLF_IL1_map->Height() == LM1nbrDof);
    assert(MBLF_IL1_map->Width() == InbrDof);
 
@@ -500,24 +542,26 @@ int main(int argc, char *argv[])
    }
    
    //Mixed Bilinear form VL2.
-   MixedBilinearForm *MBLF_VL2 = new MixedBilinearForm(Vt0FESpace /*trial*/, LM2FESpace /*test*/);
+   ParMixedBilinearForm *MBLF_VL2 = new ParMixedBilinearForm(Vt0FESpace /*trial*/, LM2FESpace /*test*/);
    MBLF_VL2->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
    MBLF_VL2->Assemble();
    MBLF_VL2->Finalize();
-   cout << MBLF_VL2->Height() << " MBLF_VL2 Height()." << endl;
-   cout << MBLF_VL2->Width() << " MBLF_VL2 Width()." << endl;
+   HypreParMatrix *pMBLF_VL2 = MBLF_VL2->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_VL2->Height() << " MBLF_VL2 Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_VL2->Width() << " MBLF_VL2 Width()." << endl;
    //create the submesh to parent operators for the Lagrange multiplier.DomainLFIntegrator
-   SubmeshOperator *MBLF_VL2_map = new SubmeshOperator(MBLF_VL2->SpMat(), *VFESpace, *Vt0FESpace, *LM2FESpace);
+   SubmeshOperator *MBLF_VL2_map = new SubmeshOperator(*pMBLF_VL2, *VFESpace, *Vt0FESpace, *LM2FESpace);
 
    //Mixed Bilinear form IL3.
-   MixedBilinearForm *MBLF_IL3 = new MixedBilinearForm(It0FESpace /*trial*/, LM3FESpace /*test*/);
+   ParMixedBilinearForm *MBLF_IL3 = new ParMixedBilinearForm(It0FESpace /*trial*/, LM3FESpace /*test*/);
    MBLF_IL3->AddDomainIntegrator(new MixedScalarMassIntegrator(one));
    MBLF_IL3->Assemble();
    MBLF_IL3->Finalize();
-   cout << MBLF_IL3->Height() << " MBLF_IL3 Height()." << endl;
-   cout << MBLF_IL3->Width() << " MBLF_IL3 Width()." << endl;
+   HypreParMatrix *pMBLF_IL3 = MBLF_IL3->ParallelAssemble();
+   if (Mpi::Root())  cout  << MBLF_IL3->Height() << " MBLF_IL3 Height()." << endl;
+   if (Mpi::Root())  cout  << MBLF_IL3->Width() << " MBLF_IL3 Width()." << endl;
    //create the submesh tp parent operators for the Lagrange multiplier.
-   SubmeshOperator *MBLF_IL3_map = new SubmeshOperator(MBLF_IL3->SpMat(), *IFESpace, *It0FESpace, *LM3FESpace);
+   SubmeshOperator *MBLF_IL3_map = new SubmeshOperator(*pMBLF_IL3, *IFESpace, *It0FESpace, *LM3FESpace);
  
    {
       std::ofstream out("out/MBLF_VL2.txt");
@@ -529,11 +573,11 @@ int main(int argc, char *argv[])
       if(printMatrix) MBLF_IL3->SpMat().PrintMatlab(out); // instead of Print()
    }
 
-   LinearForm *LFVS = new LinearForm(LM1FESpace);
+   ParLinearForm *LFVS = new ParLinearForm(LM1FESpace);
    LFVS->AddDomainIntegrator(new DomainLFIntegrator(VsRsFunctionCoeff));
    LFVS->Assemble();
 
-   cout << LFVS->Size() << " LFVS Size()." << endl;
+   if (Mpi::Root())  cout  << LFVS->Size() << " LFVS Size()." << endl;
  
    {
       std::ofstream out("out/lfvs.txt");
@@ -546,41 +590,32 @@ int main(int argc, char *argv[])
 
 
    // 6. Define the PDE inner BlockStructure BA.
-      Array<int> *BArowOffset = new Array<int>(3);
-      (*BArowOffset)[0]=0;
-      (*BArowOffset)[1]=MBLF_dvdx->Height(); 
-      (*BArowOffset)[2]=MBLF_VI->Height();
-      BArowOffset->PartialSum();
+      Array<int> *BAOffset = new Array<int>(3);
+      (*BAOffset)[0]=0;
+      (*BAOffset)[1]=pMBLF_dvdx->Height(); 
+      (*BAOffset)[2]=pMBLF_VI->Height();
+      BAOffset->PartialSum();
       {
          std::ofstream out("out/BArowOffset.txt");
-         BArowOffset->Print(out, 10);
+         BAOffset->Print(out, 10);
       }
 
-      Array<int> *BAcolOffset = new Array<int>(3);
-      (*BAcolOffset)[0]=0;
-      (*BAcolOffset)[1]=MBLF_dvdx->Width(); 
-      (*BAcolOffset)[2]=MBLF_IV->Width();
-      BAcolOffset->PartialSum();
-      {
-         std::ofstream out("out/BAcolOffset.txt");
-         BAcolOffset->Print(out, 10);
-      }
+      BlockOperator *BA = new BlockOperator(*BAOffset);
 
-      BlockMatrix *BA = new BlockMatrix(*BArowOffset, *BAcolOffset);
+      BA->SetBlock(0, 0, pMBLF_dvdx);
+      BA->SetBlock(0, 1, pMBLF_IV);
 
-      BA->SetBlock(0, 0, &(MBLF_dvdx->SpMat()));
-      BA->SetBlock(0, 1, &(MBLF_IV->SpMat()));
-
-      BA->SetBlock(1, 0, &(MBLF_VI->SpMat()));
-      BA->SetBlock(1, 1, &(MBLF_didx->SpMat()));
+      BA->SetBlock(1, 0, pMBLF_VI);
+      BA->SetBlock(1, 1, pMBLF_didx);
 
       
-      cout << BA->Height() << " BA->Height()" << endl;
-      cout << BA->Width() << " BA->Width()" << endl;
+      if (Mpi::Root())  cout  << BA->Height() << " BA->Height()" << endl;
+      if (Mpi::Root())  cout  << BA->Width() << " BA->Width()" << endl;
 
+      if (Mpi::Root() && printMatrix)
       {
       std::ofstream out("out/BA.txt");
-      if(printMatrix) BA->PrintMatlab(out); // instead of Print()
+      BA->PrintMatlab(out); // instead of Print()
       }
 
       // 6. Define the constraints inner BlockStructure BB.
@@ -614,12 +649,12 @@ int main(int argc, char *argv[])
       BB->SetBlock(1, 0, MBLF_VL2_map);
       BB->SetBlock(2, 1, MBLF_IL3_map);
       
-      cout << BB->Height() << " BB->Height()" << endl;
-      cout << BB->Width() << " BB->Width()" << endl;
+      if (Mpi::Root())  cout  << BB->Height() << " BB->Height()" << endl;
+      if (Mpi::Root())  cout  << BB->Width() << " BB->Width()" << endl;
 
-      {
-      std::ofstream out("out/BB.txt");
-      if(printMatrix) BB->PrintMatlab(out); // instead of Print()
+      if (Mpi::Root() && printMatrix) {
+         std::ofstream out("out/BB.txt");
+         BB->PrintMatlab(out); // instead of Print()
       }
 
       //
@@ -646,8 +681,8 @@ int main(int argc, char *argv[])
       OuterBlock->SetBlock(0, 1, BBT);
       OuterBlock->SetBlock(1, 0, BB);
       
-      cout << OuterBlock->Height() << " OuterBlock->Height()" << endl;
-      cout << OuterBlock->Width() << " OuterBlock->Width()" << endl;
+      if (Mpi::Root())  cout  << OuterBlock->Height() << " OuterBlock->Height()" << endl;
+      if (Mpi::Root())  cout  << OuterBlock->Width() << " OuterBlock->Width()" << endl;
 
       {
       std::ofstream out("out/OuterBlock.txt");
@@ -691,39 +726,14 @@ int main(int argc, char *argv[])
       }
 
 //
-// Prepare the constrainedoperator for applying the BC.      
-//
-
-
-
-   //ConstrainedOperator	(OuterBlock, const Array< int > &	list, bool	own_A = false, DiagonalPolicy	diag_policy = DIAG_ONE )
-
-
-
-
-
-//
 // Prepare the preconditionner...
 //
 
-   //PB00 pb00(BA);
-   //assert(pb00.Height() == VnbrDof + InbrDof);
-   //assert(pb00.Width() == VnbrDof + InbrDof);
-
-   if(0)
-   {
-      DSmoother *pb00 = new DSmoother(*(BA->CreateMonolithic()), 0);
-   }
-   
-   if(0)
-   {
-   SparseMatrix *BAmono = BA->CreateMonolithic();
-   Operator *pb00 = new UMFPackSolver(*BAmono);
-   }
-
-   SparseMatrix *BAmono = BA->CreateMonolithic();
-   HypreParMatrix *BAhypre = new HypreParMatrix(BAmono);  // Converts to Hypre format
-   HypreBoomerAMG *pb00 = new HypreBoomerAMG(*BAhypre);
+   HypreBoomerAMG *BA00 = new HypreBoomerAMG(*pMBLF_dvdx);
+   HypreBoomerAMG *BA11 = new HypreBoomerAMG(*pMBLF_didx); 
+   BlockDiagonalPreconditioner *pb00 = new BlockDiagonalPreconditioner(*BAOffset);
+   pb00->SetDiagonalBlock(0, BA00);
+   pb00->SetDiagonalBlock(1, BA11);
 
    
    PB11 pb11(*BB, *pb00);
@@ -742,7 +752,7 @@ int main(int argc, char *argv[])
 //
    if(1)
    {
-      FGMRESSolver solver;
+      FGMRESSolver solver(MPI_COMM_WORLD);
      // solver.SetFlexible(true);
       solver.SetAbsTol(0);
       solver.SetRelTol(1e-6);
@@ -752,26 +762,16 @@ int main(int argc, char *argv[])
       solver.SetOperator(*OuterBlock);
       solver.SetPreconditioner(P);
       solver.Mult(*bBlock, *xBlock);
-      cout << solver.GetFinalRelNorm() << " GetFinalRelNorm" << endl;
+      if (Mpi::Root())  cout  << solver.GetFinalRelNorm() << " GetFinalRelNorm" << endl;
    }
 
-   if(0)
-   {
-      MINRESSolver solver;
-      solver.SetAbsTol(0.0);
-      solver.SetRelTol(1e-8);
-      solver.SetMaxIter(5000);
-      solver.SetOperator(*OuterBlock);
-      //solver.SetPreconditioner(*prec);
-      solver.SetPrintLevel(1);
-      solver.Mult(*bBlock, *xBlock);
-   }
+  
 
-   GridFunction *VGF = new GridFunction(VFESpace, xV, 0);
-   Glvis(mesh, VGF, "Voltage", 8, " keys 'mcjaaa'");
+   ParGridFunction *VGF = new ParGridFunction(VFESpace, xV, 0);
+   pGlvis(myid, pmesh, VGF, "Voltage", 8, " keys 'mcjaaa'");
 
-   GridFunction *IGF = new GridFunction(IFESpace, xI, 0);
-   Glvis(mesh, IGF, "Current", 8, " keys 'mcjaaa'");
+   ParGridFunction *IGF = new ParGridFunction(IFESpace, xI, 0);
+   pGlvis(myid, pmesh, IGF, "Current", 8, " keys 'mcjaaa'");
 
    return 1;
 }

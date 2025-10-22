@@ -35,7 +35,6 @@ void SMSumColumns(const SparseMatrix &mat, Vector &vec)
    {
       // Get the data for the specified row
       const int *columns = mat.GetRowColumns(i);
-      const double *values = mat.GetRowEntries(i);
       int row_size = mat.RowSize(i);
       // Search for the column index
       for (int k = 0; k < row_size; k++)
@@ -196,6 +195,25 @@ void Glvis(Mesh *m, GridFunction *gf, string title, int precision, string keys)
    char vishost[] = "localhost";
    int  visport   = 19916;
    socketstream sol_sock(vishost, visport);
+   sol_sock.precision(precision);
+   
+   sol_sock << "solution\n" << *m << *gf
+            << "window_title '" + title +"'"
+            << keys << flush;  
+
+   // Save in GLVIS.
+   char fileName[250];
+   sprintf(fileName, "glvis/%s.gf", title.data());
+   gf->Save(fileName);
+}
+
+void pGlvis(int myid, ParMesh *m, ParGridFunction *gf, string title, int precision, string keys)
+{
+   char vishost[] = "localhost";
+   int  visport   = 19916;
+   int num_procs = Mpi::WorldSize();
+   socketstream sol_sock(vishost, visport);
+   sol_sock << "parallel " << num_procs << " " << myid << "\n";
    sol_sock.precision(precision);
    
    sol_sock << "solution\n" << *m << *gf
