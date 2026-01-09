@@ -1,4 +1,4 @@
-//                                stlt
+//                                stltfe.cpp
 //                                
 // Compile with: make stltfe, need MFEM version 4.7 and GLVIS-4.3.
 //
@@ -31,6 +31,8 @@ class TransmissionLineTransient
       const char *meshFile = "stlmesh-1.msh";
       int order = 1;
       bool printMatrix = true;
+      Vector *y;
+
       
 // Constants for the telegrapher’s equation for RG-58, 50 ohm.
 double L = 250e-9;  // Inductance per unit length
@@ -441,15 +443,18 @@ int TransmissionLineTransient::TimeSteps()
    Vector zeroVector(3);
    zeroVector = 0.0;
 
+   y = new Vector(2 * nbrDof);
+
    while(Time<endTime)
    {
+
       for(int i=0; i<0+2*nbrDof; i++) (*xR)[i]=(*xL)[i-0];
       (*xR)[0]=SourceFunction(zeroVector, Time);
       (*Input)[j++]=(*xR)[0];
       (*xL)=0.0;
       //rhs column y
       
-      rhsOp->Mult(*xR, y);
+      rhsOp->Mult(*xR, *y);
 
       // solve lhsOp xL = xR, to get xR.
       GMRESSolver solver;
@@ -460,7 +465,7 @@ int TransmissionLineTransient::TimeSteps()
       //   solver.SetAbsTol(1e-8);
       //solver.SetMaxIter(500);
       //solver.SetPrintLevel(1);
-      solver.Mult(y, *xL);     
+      solver.Mult(*y, *xL);     
       
    Time += deltaT;
    }

@@ -1,14 +1,19 @@
 //                                stltferk4
 //                                
-// Compile with: make stltfe2d, need MFEM version 4.8 and GLVIS-4.3.
+// Compile with: make stltfe2d_submesh_p, need MFEM version 4.8 and GLVIS-4.3.
 //
-// Sample runs:  ./stltfe2d
+// Sample runs:  mpirun -np 1 gdb --args ./stltfe2d_submesh_p
 //
 /*
-Description:  stltfe (single transmission line transient finite element
+Description:  stltfe2d_submesh_p (single transmission line transient finite element
 2D) simulate a single transmission line with various source
 signals, source impedances and load impedances. It treat time as a space dimension
-to make use of MFEM capability.
+to make use of MFEM capability. The initial conditions, the source with Rs resistance
+are applied with lagrange multipliers.
+
+****
+**** NOTE: The software does not work yet.
+****
  
 Written by Denis Lachapelle, 2025
 */
@@ -22,80 +27,16 @@ Written by Denis Lachapelle, 2025
 using namespace std;
 using namespace mfem;
 
-real_t timeScaling = 1e9;  // make time and space axis the same size.
-
-#include <mfem.hpp>
-using namespace mfem;
-
-/*
-class BlockDiagAMG : public Solver
-{
-public:
-   BlockDiagAMG(const Array<int> &offsets,
-                HypreParMatrix &A00,
-                HypreParMatrix &A11)
-      : Solver(offsets.Last()),
-        offsets_(offsets),
-        amg0_(&A00), amg1_(&A11),
-        x0_(offsets[1]-offsets[0]),
-        x1_(offsets[2]-offsets[1]),
-        y0_(offsets[1]-offsets[0]),
-        y1_(offsets[2]-offsets[1])
-   {
-      // Configure each BoomerAMG as you like
-      amg0_.SetPrintLevel(0);
-      amg0_.SetSystemsOptions(1);  // if A00 is vector-valued SPD; else omit
-      amg0_.SetCoarsenType(8);     // HMIS coarsening (example)
-      amg0_.SetRelaxType(6);       // Symmetric SOR/Jacobi (example)
-
-      amg1_.SetPrintLevel(0);
-      amg1_.SetCoarsenType(8);
-      amg1_.SetRelaxType(6);
-
-      // Recommended: amg0_.SetOperator(A00); amg1_.SetOperator(A11);  // done by constructors
-
-      // This preconditioner is square and maps size N -> N
-   }
-
-   void Mult(const Vector &x, Vector &y) const override
-   {
-      // Split input into blocks
-      Vector x0(const_cast<double*>(x.GetData()+offsets_[0]), offsets_[1]-offsets_[0]);
-      Vector x1(const_cast<double*>(x.GetData()+offsets_[1]), offsets_[2]-offsets_[1]);
-
-      // Apply AMG per block
-      amg0_.Mult(x0, y0_);
-      amg1_.Mult(x1, y1_);
-
-      // Stitch output
-      y.SetSize(offsets_.Last());
-      y.Range(offsets_[0], offsets_[1]-offsets_[0]) = y0_;
-      y.Range(offsets_[1], offsets_[2]-offsets_[1]) = y1_;
-   }
-
-   // Optional: expose SetOperator to rebuild AMG after updates
-   void SetOperators(HypreParMatrix &A00, HypreParMatrix &A11)
-   {
-      amg0_.SetOperator(A00);
-      amg1_.SetOperator(A11);
-   }
-
-private:
-   const Array<int> &offsets_;
-   mutable HypreBoomerAMG amg0_, amg1_;
-   mutable Vector x0_, x1_, y0_, y1_;
-};
-*/
+real_t timeScaling = 1e9;  // make time and space axis the same scale/size.
 
 
-// Matrix-free wrapper: 
-//  y_lambda = Bs * ( T_p2s * x_parent )      // via Mult
-//  y_parent = T^T * ( Bs^T * y_lambda )  // via MultTranspose
-// use on parent space.
+// Class to adapt parent space to submesh space and vice-versa. 
+//  y_lambda = Bs * ( T_p2s * x_parent )   // via Mult
+//  y_parent = T_s2p * ( Bs^T * y_lambda )  // via MultTranspose
 class SubmeshOperator : public Operator
 {
 public:
-  SubmeshOperator(const HypreParMatrix &Bs_, //operator on submesh.
+  SubmeshOperator(HypreParMatrix &Bs_, //operator on submesh.
                     ParFiniteElementSpace &fes_parent,
                     ParFiniteElementSpace &fes_sub,
                     ParFiniteElementSpace &fes_lambda)
@@ -130,7 +71,7 @@ public:
   }
 
 private:
-  mutable HypreParMatrix Bs;
+  HypreParMatrix &Bs;
   mutable ParTransferMap T_p2s;     // parent -> submesh
   mutable ParTransferMap T_s2p;     // submesh -> parent (acts like T^T)
   mutable ParGridFunction GF1p, GF2s, GF3l, GF4p;
@@ -168,17 +109,17 @@ class PB11 : public Operator
 
          solver = new GMRESSolver();
          solver->SetAbsTol(0);
-         solver->SetRelTol(1e-2);
-         solver->SetMaxIter(50);
+         solver->SetRelTol(1e-1);
+         solver->SetMaxIter(20);
          solver->SetPrintLevel(1);
-         solver->SetKDim(50);
+         solver->SetKDim(20);
          solver->SetOperator(*BAM1BT);
       }
 
-      virtual void Mult(const Vector &x, Vector &y) const override
+      virtual void Mult(const Vector &b, Vector &x) const override
       {
-         y = 0.0;
-         solver->Mult(x, y);
+         x = 0.0;
+         solver->Mult(b, x);
       }
 };
 
@@ -729,8 +670,8 @@ int main(int argc, char *argv[])
 // Prepare the preconditionner...
 //
 
-   HypreBoomerAMG *BA00 = new HypreBoomerAMG(*pMBLF_dvdx);
-   HypreBoomerAMG *BA11 = new HypreBoomerAMG(*pMBLF_didx); 
+   DSmoother *BA00 = new DSmoother(*pMBLF_dvdx);
+   DSmoother *BA11 = new DSmoother(*pMBLF_didx); 
    BlockDiagonalPreconditioner *pb00 = new BlockDiagonalPreconditioner(*BAOffset);
    pb00->SetDiagonalBlock(0, BA00);
    pb00->SetDiagonalBlock(1, BA11);
@@ -753,14 +694,13 @@ int main(int argc, char *argv[])
    if(1)
    {
       FGMRESSolver solver(MPI_COMM_WORLD);
-     // solver.SetFlexible(true);
       solver.SetAbsTol(0);
       solver.SetRelTol(1e-6);
-      solver.SetMaxIter(5000);
+      solver.SetMaxIter(50);
       solver.SetPrintLevel(1);
       solver.SetKDim(50);
       solver.SetOperator(*OuterBlock);
-      solver.SetPreconditioner(P);
+      //solver.SetPreconditioner(P);
       solver.Mult(*bBlock, *xBlock);
       if (Mpi::Root())  cout  << solver.GetFinalRelNorm() << " GetFinalRelNorm" << endl;
    }

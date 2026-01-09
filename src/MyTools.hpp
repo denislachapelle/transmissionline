@@ -19,7 +19,7 @@ double IntScalar4(FiniteElementSpace &fes, Coefficient &coeff, int Attr);
 /// identified by an Attribute, Attr, on the FiniteElementSpace fes.
 double IntegrateScalar(FiniteElementSpace &fes, Coefficient &coeff, int Attr);
 void Glvis(Mesh *m, GridFunction *gf, string title, int precision = 8, string keys=" keys 'mmcj'");
-void pGlvis(int myId, ParMesh *m, ParGridFunction *gf, string title, int precision, string keys);
+//void pGlvis(int myId, ParMesh *m, ParGridFunction *gf, string title, int precision, string keys);
 
 int GetScalarValues(Array<double> &ap,  GridFunction &gf, Array<double> &av, int vdim);
 

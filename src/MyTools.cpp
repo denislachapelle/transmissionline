@@ -207,6 +207,7 @@ void Glvis(Mesh *m, GridFunction *gf, string title, int precision, string keys)
    gf->Save(fileName);
 }
 
+/*
 void pGlvis(int myid, ParMesh *m, ParGridFunction *gf, string title, int precision, string keys)
 {
    char vishost[] = "localhost";
@@ -225,7 +226,7 @@ void pGlvis(int myid, ParMesh *m, ParGridFunction *gf, string title, int precisi
    sprintf(fileName, "glvis/%s.gf", title.data());
    gf->Save(fileName);
 }
-
+*/
 
 int GetScalarValues(Array<double> &ap,  GridFunction &gf, Array<double> &av, int vdim)
 {
