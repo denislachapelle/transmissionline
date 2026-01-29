@@ -8,3 +8,8 @@ call stlt to run the telegraph equation model.
 stltfe2d_submesh.cpp: single transmission line transient finite element 2D using submesh. Done in serial mode.
 
 stltfe2d_02.cpp: try with bounadry integrator ...
+
+stltfe1d_03.cpp: return to 1D approach with time stepping, forward euler. stable for little over 300ns.
+
+stltfe1d_04.cpp: return to 1D approach with time stepping, backward euler.
+

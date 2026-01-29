@@ -244,11 +244,13 @@ ConstantCoefficient rightBoundaryVConstCoeff(-1.0 * penalty);
 //
    // A11
    ConstantCoefficient Small(1e-2), CC_ONE(1.0);
-   BilinearForm *A11 = new BilinearForm(VFESpace);
-   A11->AddDomainIntegrator(new DerivativeIntegrator(CC_ONE, 0)); //x direction.
+   Vector VxDir{1.0, 0.0};                 // C++11 initializer_list constructor
+   VectorConstantCoefficient VCCxDir(VxDir);
+   MixedBilinearForm *A11 = new MixedBilinearForm(VFESpace, IFESpace);
+   A11->AddDomainIntegrator(new MixedDirectionalDerivativeIntegrator(VCCxDir)); //x direction.
    A11->AddBoundaryIntegrator(new BoundaryMassIntegrator(leftBoundaryVConstCoeff), leftBdrMarker);
-   A11->AddBoundaryIntegrator(new BoundaryMassIntegrator(rightBoundaryVConstCoeff), rightBdrMarker);
-   A11->AddDomainIntegrator(new MassIntegrator(Small));
+   //A11->AddBoundaryIntegrator(new BoundaryMassIntegrator(rightBoundaryVConstCoeff), rightBdrMarker);
+   //A11->AddDomainIntegrator(new MassIntegrator(Small));
    A11->Assemble();
    A11->Finalize();
    cout << A11->Height() << " A11 Height()." << endl;
@@ -267,7 +269,7 @@ ConstantCoefficient rightBoundaryVConstCoeff(-1.0 * penalty);
    A12->AddDomainIntegrator(new MixedDirectionalDerivativeIntegrator(VCC_L));
    A12->AddDomainIntegrator(new MixedScalarMassIntegrator(CC_R));
    A12->AddBoundaryIntegrator(new BoundaryMassIntegrator(CC_Rs), leftBdrMarker);
-   A12->AddBoundaryIntegrator(new BoundaryMassIntegrator(CC_Rl), rightBdrMarker);
+   //A12->AddBoundaryIntegrator(new BoundaryMassIntegrator(CC_Rl), rightBdrMarker);
    A12->Assemble();
    A12->Finalize();//Mixed Bilinear form VL1.
    cout << A12->Height() << " A12 Height()." << endl;
@@ -356,7 +358,7 @@ minabs = std::numeric_limits<double>::infinity();
 for (int i = 0; i < d.Size(); i++) { minabs = std::min(minabs, std::abs(d[i])); }
 std::cout << "A22 min |diag| = " << minabs << std::endl;
    }
-
+/*
 //
 // arrange for the zero boundary value.
 //
@@ -408,7 +410,7 @@ A12->EliminateTestVDofs(VessDofsList);
 A21->EliminateTestVDofs(IessDofsList);
 A12->EliminateTestVDofs(VtopDofsList);
 A21->EliminateTestVDofs(ItopDofsList);
-
+*/
 
    {
       std::ofstream out("out/A11.txt");

@@ -8,6 +8,64 @@
 using namespace std;
 using namespace mfem;
 
+void MyPrintFile(LinearForm *p, bool print, string file)
+{
+   if(print)
+   {
+      std::ofstream out(file);
+      p->Print(out, 10);
+   }
+}
+
+
+
+void MyPrintFile(BilinearForm *p, bool print, string file)
+{
+   if(print)
+   {
+      std::ofstream out(file);
+      p->Print(out, 10);
+   }
+}
+
+
+void MyPrintFile(Mesh *p, bool print, string file)
+{
+   if(print)
+   {
+       std::ofstream out(file);
+      p->Print(out);
+   }
+}
+
+void MyPrintFile(Array<int> *p, bool print, string file)
+{
+   if(print)
+   {
+      std::ofstream out(file);
+      p->Print(out);
+   }
+}
+
+void MyPrintFile(Vector *p, bool print, string file)
+{
+      if(print)
+   {
+      std::ofstream out(file);
+      p->Print(out, 1);
+   }
+}
+
+void MyPrintFile(BlockOperator *p, bool print, string file)
+{
+   if(print)
+   {
+      std::ofstream out(file);
+      p->PrintMatlab(out);
+   }
+}
+
+
 bool EntryExists(const mfem::SparseMatrix &A, int i, int j)
 {
     const int *I = A.GetI(); // Row offsets

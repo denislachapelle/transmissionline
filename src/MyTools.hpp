@@ -8,6 +8,13 @@
 using namespace mfem;
 using namespace std;
 
+void MyPrintFile(LinearForm *p, bool print, string file);
+void MyPrintFile(BilinearForm *p, bool print, string file);
+void MyPrintFile(Mesh *p, bool print, string file);
+void MyPrintFile(Array<int> *p, bool print, string file);
+void MyPrintFile(Vector *p, bool print, string file);
+void MyPrintFile(BlockOperator *p, bool print, string file);
+
 bool EntryExists(const mfem::SparseMatrix &A, int i, int j);
 void CleanOutDir();
 void SMSumRows(const SparseMatrix &mat, Vector &vec);
