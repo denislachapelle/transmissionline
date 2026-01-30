@@ -50,11 +50,47 @@ int functionIndex=0;
 
 int vis = 2; //gnuplot.
 
+real_t fp1=NAN, fp2=NAN;
+
+#include "mfem.hpp"
+#include <fstream>
+
+using namespace mfem;
+
+void ExportForGnuplot(GridFunction &u, int ref_points, std::string &out) {
+
+    Mesh *mesh = u.FESpace()->GetMesh();
+   std::ostringstream ssout;
+    // Integration rules can give us a uniform lattice of points
+    // Or we can manually loop through the reference space
+    for (int i = 0; i < mesh->GetNE(); i++) {
+        ElementTransformation *T = mesh->GetElementTransformation(i);
+        
+        for (int j = 0; j < ref_points; j++) {
+            // Create a local coordinate xi from -1 to 1
+            double xi_val = -1.0 + 2.0 * j / (ref_points - 1);
+            IntegrationPoint ip;
+            ip.x = xi_val; // For 1D; for 2D use ip.y as well
+
+            Vector phys_x;
+            T->Transform(ip, phys_x); // Get physical coordinates
+            
+            double val = u.GetValue(i, ip); // Get the H2 interpolated value
+            
+            ssout << phys_x(0) << " " << val << "\n";
+        }
+        // Separate elements by a blank line for Gnuplot "with lines"
+        ssout << "\n"; 
+    }
+    out = ssout.str();
+}
+
+
 FILE* CreatePlot5x2()
 {
     FILE *gnuplotPipe = popen("gnuplot -persistent", "w");
     if (gnuplotPipe) {
-      fprintf(gnuplotPipe, "set terminal qt size 1000,800 noraise\n");
+      fprintf(gnuplotPipe, "set terminal qt size 1000,800 noraise title 'MFEM Simulation: V left, I right'\n");
         fprintf(gnuplotPipe, "set multiplot layout 5,2\n");
         
         // GLOBAL SETTINGS to save space
@@ -69,30 +105,36 @@ FILE* CreatePlot5x2()
     return gnuplotPipe;
 }
 
-void PlotRow(FILE* gnuplotPipe, Mesh *mesh, GridFunction *VGF, GridFunction *IGF, double time)
+void PlotRow(FILE* gnuplotPipe, Mesh *mesh, std::string &VS, std::string &IS, double time)
 {
     if (gnuplotPipe) {
         // --- Left Plot: Voltage ---
         //fprintf(gnuplotPipe, "set title 'V: %.1f ns' font ',8'\n", time * 1e9);
         
         fprintf(gnuplotPipe, "plot '-' with lines lw 1.5 lc 'blue'\n");
+        fprintf(gnuplotPipe, "%s", VS.c_str());
+        /*
         for (int i = 0; i < VGF->Size(); i++) {
             real_t pos;
             mesh->GetNode(i, &pos);
             fprintf(gnuplotPipe, "%f %f\n", pos, (*VGF)(i));
         }
+        */
         fprintf(gnuplotPipe, "e\n"); 
-
+        
         // --- Right Plot: Current ---
         // We set a different range for current if it's much smaller than voltage
         //fprintf(gnuplotPipe, "set yrange [-0.05:0.05]\n"); 
         //fprintf(gnuplotPipe, "set title 'I: %.1f ns' font ',8'\n", time * 1e9);
         fprintf(gnuplotPipe, "plot '-' with lines lw 1.5 lc 'red'\n");
+        fprintf(gnuplotPipe, "%s", IS.c_str());
+        /*
         for (int i = 0; i < IGF->Size(); i++) {
             real_t pos;
             mesh->GetNode(i, &pos);
             fprintf(gnuplotPipe, "%f %f\n", pos, (*IGF)(i));
         }
+        */
         fprintf(gnuplotPipe, "e\n"); 
         
         // Reset yrange for the next row's Voltage plot
@@ -114,8 +156,8 @@ void ClosePlot5x2(FILE* gnuplotPipe)
 real_t SourceFunctionGaussianPulse(const Vector x, real_t t)
 {
    /* gaussian pulse of tw wide centered at tc.*/
-   real_t tw = 100e-9;
-   real_t tc = 300e-9;
+   real_t tw = (std::isnan(fp1)) ? 100e-9 : fp1;
+   real_t tc = (std::isnan(fp2)) ? 300e-9 : fp2;
    if(t<2*tc) return 4.0 * t/(2.0*tc)*(1-t/(2.0*tc)) * exp(-pow(((t-tc)/tw), 2.0));
    else return 0.0;
 }
@@ -123,13 +165,13 @@ real_t SourceFunctionGaussianPulse(const Vector x, real_t t)
 real_t SourceFunctionStep(const Vector x, real_t t)
 {
       //step.
-      real_t tau = 5e-9;  //time constant.
+      real_t tau = (std::isnan(fp1)) ? 5e-9 : fp1; //time constant.
       return 1.0 - exp(-t/tau);
 }
 
 real_t SourceFunctionSine(const Vector x, real_t t)
 {
-   real_t freq = 200e6;
+   real_t freq = (std::isnan(fp1)) ? 10e6 : fp1;
    return sin(2*M_PI*freq*t);
 }
 
@@ -381,6 +423,13 @@ int main(int argc, char *argv[])
    args.AddOption(&functionIndex, "-fi", "--functionIndex",
                   "0-gaussian pulse, 1-step 2-sine");
 
+   args.AddOption(&fp1, "-fp1", "--functionparam1",
+                  "parameter #1 for source function");
+   args.AddOption(&fp2, "-fp2", "--functionparam2",
+                  "parameter #2 for source function");
+   args.AddOption(&vis, "-vis", "--visualisation",
+                  "0-no visualisation, 1-GLVIS 2-gnuplot");
+
                  
    args.Parse();
 
@@ -478,8 +527,12 @@ int main(int argc, char *argv[])
         }
         else if(vis==2)
         {
+            std::string VS, IS;
+            ExportForGnuplot(*VGF, 11, VS);
+            ExportForGnuplot(*IGF, 11, IS);
+             
             // Call our internal Gnuplot function
-            PlotRow(gnuplotPipe, mesh, VGF, IGF, time);
+            PlotRow(gnuplotPipe, mesh, VS, IS, time);
         }
 
          plotCount++;

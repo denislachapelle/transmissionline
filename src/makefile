@@ -14,7 +14,7 @@ GMSH_DIR ?= /
 
 #COMMON_LIB = -L$(MFEM_BUILD_DIR)/miniapps/common -lmfem-common
 
-all: createtl tltransient tlchatgpt stlt sltfe stltferk4 stltfdrk4 stltfe2d_submesh stltfe2d_p stltfe2d_NO_submesh stltfe2d_submesh_p
+all: createtl tltransient tlchatgpt stlt sltfe stltferk4 stltfdrk4 stltfe2d_submesh stltfe2d_p stltfe2d_NO_submesh stltfe2d_submesh_p stltfe1d_04
 
 createtl: createtl.cpp 
 	g++ -g -o ../createtl  -std=c++11 -I$(MFEM_DIR) createtl.cpp -L$(MFEM_BUILD_DIR) -lmfem -I/usr/local/include -L/usr/lib/libgmsh.so -lgmsh -lrt 
@@ -81,3 +81,17 @@ stltfe2d_submesh_p: stltfe2d_submesh_p.cpp MyTools.cpp
 	-L$(MFEM_DIR48)/../hypre-2.33.0/src/hypre/lib -lHYPRE \
 	-L$(MFEM_DIR48)/../metis-4.0.3 -lmetis \
 	-lrt
+
+stltfe1d_04: stltfe1d_04.cpp MyTools.cpp
+	g++ -g -O0 -std=c++11 \
+  -I/mnt/c/mfem/mfem-4.8 \
+   -I/mnt/c/mfem/mfem-4.8/../SuiteSparse/include \
+  -I$(MFEM_DIR48)/../hypre-2.33.0/src/hypre/include \
+  stltfe1d_04.cpp MyTools.cpp \
+  -L/mnt/c/mfem/mfem-4.8 -lmfem \
+  -L/usr/lib/x86_64-linux-gnu \
+  -lumfpack -lcholmod -lcamd -lccolamd -lcolamd -lamd -lklu -lsuitesparseconfig \
+  -L$(MFEM_DIR48)/../hypre-2.33.0/src/hypre/lib -lHYPRE -L$(MFEM_DIR48)/../metis-4.0.3 -lmetis \
+  -lblas -llapack -lmetis \
+  -o ../stltfe1d_04
+
