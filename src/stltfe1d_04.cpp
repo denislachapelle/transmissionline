@@ -1,21 +1,137 @@
-//                                stltfe1d_04
-//                                
-// Compile with: make stltfe1d_04, need MFEM version 4.8 and GLVIS-4.2.
+//==============================================================================
+//  stltfe1d_04.cpp
+//==============================================================================
 //
-// Sample runs:  ./stltfe1d_03
+//  Title
+//  -----
+//  Single Transmission Line Transient finite element Simulation (1D) using MFEM
 //
-/*
-Description:  stltfe1d (single transmission line transient finite element 1D) 
-simulate a single transmission line with various source
-signals, source impedances and load impedances.
-
-The time stepping is backward  euler.
-
-For mor details see stltfe1d.pdf (latex).
-
-
-January 21, 2026: The software work fine.
-*/
+//  Description
+//  -----------
+//  This program simulates the time-domain transient behavior of a *single* lossy
+//  transmission line governed by the telegrapher’s equations:
+//
+//      ∂V/∂x + L ∂I/∂t + R I = 0
+//      ∂I/∂x + C ∂V/∂t + G V = 0
+//
+//  on a 1D spatial domain x ∈ [0, ℓ]. The sign convention used is:
+//      - x increases from the source (port a) to the load (port b)
+//      - I(x,t) > 0 means current flows from a → b
+//
+//  The model includes:
+//      - A Thevenin voltage source with source resistance Rs at x = 0
+//      - A resistive load Rl at x = ℓ
+//
+//  Discretization
+//  --------------
+//  - Spatial discretization:
+//      Continuous H1 finite elements (both V and I in H1).
+//  - Time integration:
+//      Backward Euler (implicit, first-order).
+//  - Linear system:
+//      A coupled 2×2 block system is assembled and solved at each time step.
+//
+//  State Vector
+//  ------------
+//      x = [ I_dofs ; V_dofs ]
+//
+//  where both I and V share the same finite element space.
+//
+//  Boundary Conditions
+//  -------------------
+//  - Source port (x = 0):
+//        V_s(t) = V(0,t) + R_s I(0,t)
+//    enforced weakly via a boundary mass term and a boundary linear form.
+//  - Load port (x = ℓ):
+//        V(ℓ,t) = R_L I(ℓ,t)
+//    enforced weakly via a boundary mass term.
+//
+//  Source Functions
+//  ----------------
+//  The source waveform is selected using -fi / --functionIndex:
+//
+//      0 : Gaussian pulse
+//          Parameters:
+//            fp1 = pulse width (tw) [s]      (default: 50e-9)
+//            fp2 = pulse center time (tc) [s] (default: 100e-9)
+//
+//      1 : Step response
+//          Parameters:
+//            fp1 = time constant tau [s]     (default: 5e-9)
+//
+//      2 : Sine wave
+//          Parameters:
+//            fp1 = frequency [Hz]             (default: 10e6)
+//
+//  Visualization
+//  -------------
+//  Controlled by -vis / --visualisation:
+//
+//      0 : No visualization
+//      1 : GLVis windows (separate V and I)
+//      2 : Gnuplot (V and I overlaid, dual y-axis)
+//
+//  Gnuplot mode overlays voltage (left y-axis) and current (right y-axis)
+//  in the same subplot for direct comparison.
+//
+//  Command-Line Options and Defaults
+//  ---------------------------------
+//       Default LCRG are the one of RG-58 coax.
+//      -L   --inductance        L   [H/m]   (default: 250e-9)
+//      -C   --capacitance       C   [F/m]   (default: 100e-12)
+//      -R   --resistance        R   [Ohm/m] (default: 220e-3)
+//      -G   --conductance       G   [S/m]   (default: 1.0e-9)
+//
+//      -Rs  --source-impedance  Rs  [Ohm]   (default: 50.0)
+//      -Rl  --load-impedance    Rl  [Ohm]   (default: 50.0)
+//
+//      -ns  --nbrSeg            number of spatial segments (default: 100)
+//      -l   --lenght            line length [m]            (default: 100.0)
+//      -o   --order             FE polynomial order        (default: 1)
+//
+//      -dt  --deltaT            time step Δt [s]           (default: 0.05e-9)
+//      -et  --endTime           end time [s]               (default: 1000e-9)
+//
+//      -fi  --functionIndex     source type (0/1/2)        (default: 0 (gaussian pulse))
+//      -fp1 --functionparam1    source parameter #1        (default: NaN → auto)
+//      -fp2 --functionparam2    source parameter #2        (default: NaN → auto)
+//
+//      -vis --visualisation     visualization mode         (default: 2 (gnuplot))
+//
+//      -prm --printmatrix       enable matrix dump         (default: enabled)
+//      -dnprm --donotprintmatrix disable matrix dump
+//
+//  Build Requirements
+//  ------------------
+//      - MFEM 4.8
+//      - GLVis 4.2 (optional)
+//      - gnuplot (optional, for vis=2)
+//
+//  Build
+//  -----
+//      make stltfe1d_04
+//
+//  Example Runs
+//  ------------
+//      ./stltfe1d_04
+//      ./stltfe1d_04 -fi 0 -Rs 50 -Rl 50
+//      ./stltfe1d_04 -fi 2 -fp1 200e6 -vis 2
+//
+//  Notes
+//  -----
+//  - This code is strictly 1D.
+//  - Both V and I are represented in H1 for simplicity.
+//  - the program is working excepted for the current polarity, which seems reversed polarity.
+//
+//  Author
+//  ------
+//  Denis Lachapelle
+//
+//  Date
+//  ----
+//  January 2026
+//
+//==============================================================================
 
 #include <mfem.hpp>
 #include "mytools.hpp"
@@ -27,13 +143,13 @@ using namespace std;
 using namespace mfem;
 
 // global variables
-bool printMatrix = true; //control matrix saving to file.
+bool printMatrix = true; // control matrix saving to file.
 real_t deltaT = 0.05e-9;  //time stepping delta.
 real_t endTime = 1000e-9;
 
-int order = 1; 
-int nbrSeg = 100;
-real_t lenght = 100.0;
+int order = 1;    // basis functions order.
+int nbrSeg = 100; // number of lenght segment.
+real_t lenght = 100.0;  // transmission line lenght.
    
  
 // Constants for the telegrapher’s equation for RG-58, 50 ohm.
@@ -43,19 +159,14 @@ real_t R = 220e-3;  // Resistance per unit length
 real_t G = 1.0e-9;  // Conductance per unit length
 
 // source and load impedance.
-real_t Rs = 50.0;   // source impedance.
-real_t Rl = 50.0; //load impedance.
+real_t Rs = 50.0;    // source impedance.
+real_t Rl = 50.0;    // load impedance.
 
-int functionIndex=0;
+int functionIndex=0;    // select the source function.
 
-int vis = 2; //gnuplot.
+int vis = 2; //glvis or gnuplot.
 
-real_t fp1=NAN, fp2=NAN;
-
-#include "mfem.hpp"
-#include <fstream>
-
-using namespace mfem;
+real_t fp1=NAN, fp2=NAN;   //source function parameters.
 
 void ExportForGnuplot(GridFunction &u, int ref_points, std::string &out) {
 
@@ -91,57 +202,47 @@ FILE* CreatePlot5x2()
     FILE *gnuplotPipe = popen("gnuplot -persistent", "w");
     if (gnuplotPipe) {
       fprintf(gnuplotPipe, "set terminal qt size 1000,800 noraise title 'MFEM Simulation: V left, I right'\n");
-        fprintf(gnuplotPipe, "set multiplot layout 5,2\n");
-        
-        // GLOBAL SETTINGS to save space
-        fprintf(gnuplotPipe, "unset key\n");            // Fixes the "plot titles into key" warning
-        fprintf(gnuplotPipe, "set tmargin 2\n");        // Tighten top margin
-        fprintf(gnuplotPipe, "set bmargin 2\n");        // Tighten bottom margin
-        
-        // FIX SCALING (Prevents the "thick line" noise issue)
-        // Adjust these numbers to match your expected source voltage/current
-        //fprintf(gnuplotPipe, "set yrange [-1.2:1.2]\n"); 
+      fprintf(gnuplotPipe, "set multiplot layout 5,2\n");
+      
+      // GLOBAL SETTINGS to save space
+      fprintf(gnuplotPipe, "unset key\n");            // Fixes the "plot titles into key" warning
+      
+      // Enable secondary y-axisfprintf(gnuplotPipe, "set y2range [*:*]\n");
+      fprintf(gnuplotPipe, "set yrange [-0.6:0.6]\n");
+      fprintf(gnuplotPipe, "set y2range [-0.012:0.012]\n");
+
+      fprintf(gnuplotPipe, "set rmargin 12\n"); 
+      fprintf(gnuplotPipe, "set lmargin 10\n");     // optional symmetry / avoid clipping
+      fprintf(gnuplotPipe, "set ytics nomirror\n"); // don't mirror left ticks to right
+      fprintf(gnuplotPipe, "set y2tics\n");         // enable right axis ticks/labels
+      fprintf(gnuplotPipe, "set y2tics nomirror\n");// keep right ticks independent
+      fprintf(gnuplotPipe, "set y2format '%%.3g'\n");// ensure numeric labels show
     }
     return gnuplotPipe;
 }
 
 void PlotRow(FILE* gnuplotPipe, Mesh *mesh, std::string &VS, std::string &IS, double time)
 {
-    if (gnuplotPipe) {
-        // --- Left Plot: Voltage ---
-        //fprintf(gnuplotPipe, "set title 'V: %.1f ns' font ',8'\n", time * 1e9);
-        
-        fprintf(gnuplotPipe, "plot '-' with lines lw 1.5 lc 'blue'\n");
-        fprintf(gnuplotPipe, "%s", VS.c_str());
-        /*
-        for (int i = 0; i < VGF->Size(); i++) {
-            real_t pos;
-            mesh->GetNode(i, &pos);
-            fprintf(gnuplotPipe, "%f %f\n", pos, (*VGF)(i));
-        }
-        */
-        fprintf(gnuplotPipe, "e\n"); 
-        
-        // --- Right Plot: Current ---
-        // We set a different range for current if it's much smaller than voltage
-        //fprintf(gnuplotPipe, "set yrange [-0.05:0.05]\n"); 
-        //fprintf(gnuplotPipe, "set title 'I: %.1f ns' font ',8'\n", time * 1e9);
-        fprintf(gnuplotPipe, "plot '-' with lines lw 1.5 lc 'red'\n");
-        fprintf(gnuplotPipe, "%s", IS.c_str());
-        /*
-        for (int i = 0; i < IGF->Size(); i++) {
-            real_t pos;
-            mesh->GetNode(i, &pos);
-            fprintf(gnuplotPipe, "%f %f\n", pos, (*IGF)(i));
-        }
-        */
-        fprintf(gnuplotPipe, "e\n"); 
-        
-        // Reset yrange for the next row's Voltage plot
-        //fprintf(gnuplotPipe, "set yrange [-1.2:1.2]\n");
+   if (!gnuplotPipe) return;
 
-        fflush(gnuplotPipe);
-    }
+    // Optional titles per row
+    fprintf(gnuplotPipe,
+        "set title 't = %.1f ns'\n", time * 1e9);
+
+    // Plot V on left axis, I on right axis
+    fprintf(gnuplotPipe,
+        "plot '-' with lines lw 1.5 lc 'blue' axes x1y1, "
+        "'-' with lines lw 1.5 lc 'red'  axes x1y2\n");
+
+    // Voltage data
+    fprintf(gnuplotPipe, "%s", VS.c_str());
+    fprintf(gnuplotPipe, "e\n");
+
+    // Current data
+    fprintf(gnuplotPipe, "%s", IS.c_str());
+    fprintf(gnuplotPipe, "e\n");
+
+    fflush(gnuplotPipe);
 }
 
 void ClosePlot5x2(FILE* gnuplotPipe)
@@ -152,12 +253,11 @@ void ClosePlot5x2(FILE* gnuplotPipe)
     }
 }
 
-
 real_t SourceFunctionGaussianPulse(const Vector x, real_t t)
 {
    /* gaussian pulse of tw wide centered at tc.*/
-   real_t tw = (std::isnan(fp1)) ? 100e-9 : fp1;
-   real_t tc = (std::isnan(fp2)) ? 300e-9 : fp2;
+   real_t tw = (std::isnan(fp1)) ? 50e-9 : fp1;
+   real_t tc = (std::isnan(fp2)) ? 100e-9 : fp2;
    if(t<2*tc) return 4.0 * t/(2.0*tc)*(1-t/(2.0*tc)) * exp(-pow(((t-tc)/tw), 2.0));
    else return 0.0;
 }
@@ -174,7 +274,6 @@ real_t SourceFunctionSine(const Vector x, real_t t)
    real_t freq = (std::isnan(fp1)) ? 10e6 : fp1;
    return sin(2*M_PI*freq*t);
 }
-
 
 /*
 generate a time dependent signal
@@ -193,7 +292,6 @@ real_t SourceFunction(const Vector x, real_t t)
    }
    return 0;
 }
-
 
 typedef double (*SourceFunctionType)(const Vector x, double time);
 
@@ -221,7 +319,7 @@ class VsRsCoefficient : public Coefficient
 };
 
 //
-// TelegrapherOperator is used to timestep, it compute X(n+1.
+// TelegrapherOperator is used to timestep, it compute X(n+1).
 //
 class TelegrapherOperator : public TimeDependentOperator
 {
@@ -286,12 +384,12 @@ public:
       B11->Finalize();
 
       B12 = new BilinearForm(FESpace);
-      B12->AddDomainIntegrator(new DerivativeIntegrator(mOne, 0));
+      B12->AddDomainIntegrator(new DerivativeIntegrator(one, 0));
       B12->Assemble();
       B12->Finalize();
 
       B21 = new MixedBilinearForm(FESpace, FESpace);      
-      B21->AddDomainIntegrator(new MixedScalarWeakDerivativeIntegrator(mOne)); // weak derivative is (-lU, dv/dx)
+      B21->AddDomainIntegrator(new MixedScalarWeakDerivativeIntegrator(one)); // weak derivative is (-lU, dv/dx)
       B21->Assemble();
       B21->Finalize();
 
@@ -324,10 +422,7 @@ public:
       (*blockOffsets)[2]=A22->Height(); 
       blockOffsets->PartialSum();
       MyPrintFile(blockOffsets, printMatrix, "out/blockOffsets.txt" );
-   
-      
-    
-      
+        
    // Build the operator, insert each block.
    // row 0 ...
       lhsOp = new BlockOperator(*blockOffsets);
@@ -336,8 +431,7 @@ public:
       lhsOp->SetBlock(1, 0, B21);
       lhsOp->SetBlock(1, 1, B22);
       MyPrintFile(lhsOp, printMatrix, "out/lhsOp.txt" );
-   
-      
+         
    // Build the operator, insert each block.
    // rhsOp->SetBlock(0, 0, DofByOne);
       rhsOp = new BlockOperator(*blockOffsets);
@@ -486,7 +580,7 @@ int main(int argc, char *argv[])
    Zero=0.0;
 
    int plotCount = 1; //do not plot at time=0.
-   int nbrOfPlot = 5;
+   int nbrOfPlot = 10;
    double plotTimeInterval = endTime/nbrOfPlot;
    real_t time = 0.0;
    

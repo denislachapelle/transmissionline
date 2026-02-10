@@ -1,0 +1,454 @@
+\documentclass[12pt, letterpaper]{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath}
+\usepackage{mdframed}
+\usepackage{amssymb}
+
+
+
+\title{telegraph equations solved in time with MFEM library using MFEM}
+\author{Denis Lachapelle}
+\date{January 2026}
+
+\setlength{\parindent}{0pt}
+
+\begin{document}
+	
+	
+\maketitle
+
+
+\tableofcontents
+
+
+\section{Introduction}
+This document explains the telegraph equations simulation using finite element method based on MFEM library. The equations are evolved in time by time stepping estimating the partial derivative at each time step of V and I.\\
+
+It did not work yet.
+
+\section{Theory}
+
+\subsection{From Telegrah PDE to Matrix form}
+
+The telegraph equations are:
+
+  \begin{equation}\frac{\partial{V(x,t)}}{\partial{x}} + L \frac{\partial{I(x,t)}}{\partial{t}} + R I(x,t) = 0\end{equation}
+
+
+\begin{equation}\frac{\partial{I(x,t)}}{\partial{x}} + C \frac{\partial{V(x,t)}}{\partial{t}} + G V(x,t) = 0\end{equation}
+
+For now assumes a single line from points a to b. Positive current going from a to b direction.\\
+
+Going to weak form in x domain using different space for V and I, $W^V_i(x)$ for V and $W^I_i(x)$ for I. Note the test functions span the entire domain.
+
+\begin{equation}\int_a^b(\frac{\partial{V(x,t)}}{\partial{x}} + L \frac{\partial{I(x,t)}}{\partial{t}} + R I(x,t))\, W^V_i(x)\, dx = 0\end{equation}
+
+$\forall W^V_i(x)$
+
+\begin{equation}\int_a^b(\frac{\partial{I(x,t)}}{\partial{x}} + C \frac{\partial{V(x,t)}}{\partial{t}} + G V(x,t))\, W^I_i(x)\,dx = 0\end{equation}
+
+$\forall W^I_i(x)$
+
+and then
+
+
+\begin{equation}
+\int_a^b\frac{\partial{V(x,t)}}{\partial{x}} W^V_i(x)\,dx
++ \int_a^b(L \frac{\partial{I(x,t)}}{\partial{t}} +  R I(x,t)) W^V_i(x)\, dx
+= 0
+\end{equation}
+
+
+
+\begin{equation}
+\int_a^b\frac{\partial{I(x,t)}}{\partial{x}} W^I_i(x)\, dx
++ \int_a^b(C \frac{\partial{V(x,t)}}{\partial{t}} +  G V(x,t)) W^I_i(x) \, dx
+= 0
+\end{equation}
+
+Using integration by part on the first term...
+
+\begin{equation}\int_a^b u(x) v'(x) \, dx = \Big[u(x) v(x)\Big]_a^b - \int_a^b u'(x) v(x) \, dx\end{equation}
+
+Each equations becomes ...
+\newpage
+\begin{equation}
+\Big[W^V_i(x) V(x, t) \Big]_a^b
+-\int_a^b V(x, t) \frac{\partial{W^V_i(x)}}{\partial{x}} dx 
++\int_a^b L \frac{\partial{I(x,t)}}{\partial{t}} W^V_i(x)\, dx
++  \int_a^b R I(x,t) W^V_i(x)\, dx
+= 0
+\end{equation}
+
+\begin{equation}
+	\Big[W^I_i(x) I(x,t) \Big]_a^b
+-\int_a^b I(x,t) \frac{\partial{W^I_i(x)}}{\partial{x}}\, dx
++ \int_a^b C \frac{\partial{V(x,t)}}{\partial{t}} W^I_i(x)\, dx
++  \int_a^b G V(x,t) W^I_i(x)\, dx
+= 0
+\end{equation}
+
+Then we approximate by a summation of possibly different basis function for V $\phi_j$ and I $\psi_j$ as follow:
+
+\begin{equation}
+	V(x, t) = \sum_j V_j(t) \phi_j(x), 
+	\qquad
+	I(x, t) = \sum_j I_j(t) \psi_j(x) 
+\end{equation}
+
+And the time derivatives are:
+
+\begin{equation}
+\frac{\partial V(x, t)}{\partial t}
+= \sum_{j} \frac{d V_j(t)}{dt}\,\phi_j(x)
+\qquad
+\frac{\partial I(x, t)}{\partial t}
+= \sum_{j} \frac{d I_j(t)}{dt}\,\psi_j(x)
+\end{equation}
+
+Replacing each of $V(x, t), I(x, t), \frac{\partial V(x, t)}{\partial t}$ and $\frac{\partial I(x, t)}{\partial t}$ in equations 8 and 9 we get...
+
+\begin{equation}
+	\begin{aligned}
+    \Big[W^V_i(x) V(x,t) \Big]_a^b
+   - \sum_j V_j(t) \int_a^b \phi_j(x) \frac{\partial{W^V_i(x)}}{\partial{x}} dx \\
+	+ L  \sum_j \frac{\partial{I_j(t)}}{\partial t}    \int_a^b \psi_j(x) W^V_i(x) dx 
+	+  R  \sum_j I_j(t) \int_a^b \psi_j(x) W^V_i(x) dx \\
+	= 0
+    \end{aligned}
+\end{equation}
+
+and equation 9 becomes ...
+
+\begin{equation}
+	\begin{aligned}
+   \Big[W^I_i(x) I(x,t) \Big]_a^b
+   - \sum_j I_j(t) 	\int_a^b \psi_j(x) \frac{\partial{W^I_i(x)}}{\partial{x}} \\
+	+ C  \sum_j  \frac{\partial{V_j(t)}}{\partial{t}} \int_a^b \psi_j(x) W^I_i(x) dx
+	+ G  \sum_j V_j(t) \int_a^b \phi_j(x) W^I_i(x) dx\\
+	= 0
+	\end{aligned}
+\end{equation}
+
+So now we have two equations (12) and (13) with unknown $V_j(t)$ and $I_j(t)$.\\
+
+The j span the trial functions (Approximating Functions) and the i span the test functions. The equations can be converted in matrix form... 
+
+\begin{equation}
+    W^V_i(b) V(b,t) -  W^V_i(a) V(a,t)
+    	- S_V V(t) + L M_V \frac{\partial I(t)}{\partial t} + R M_V I(t) = 
+	= 0
+\end{equation}
+
+\begin{equation}
+     W^I_i(b) I(b,t) - W^I_i(a) I(a,t)
+   	- S_I I(t) + C M_I \frac{\partial V(t)}{\partial t} + G M_I V(t) = 
+	= 0
+\end{equation}
+
+One more step to include our particular boundaries.
+
+
+\begin{equation}
+	R_S I_a + V_a = V_S
+\end{equation}
+
+The transmission line point b is loaded with a resistor $R_L$.
+
+\begin{equation}
+	V_b - R_L I_b = 0
+\end{equation}
+
+The boundaries constraints are added just in the 1st equation.
+
+
+\begin{equation}
+	W^V_i(b) R_L I(b,t) -  W^V_i(a) V_S(t) + W^V_i(a) R_S I(a,t)
+	- S_V V(t) + L M_V \frac{\partial I(t)}{\partial t} + R M_V I(t) = 
+	= 0
+\end{equation}
+
+\begin{equation}
+	W^I_i(b) I(b,t) - W^I_i(a) I(a,t)
+	- S_I I(t) + C M_I \frac{\partial V(t)}{\partial t} + G M_I V(t) = 
+	= 0
+\end{equation}
+
+
+
+
+Where ...
+
+\[S_V = \int_a^b \phi_j \frac{\partial W^V_i}{\partial x} dx,
+\qquad
+M_V = \int_a^b \psi_j W^V_i dx\]
+
+\[S_I = \int_a^b \psi_j \frac{\partial W^I_i}{\partial x} dx,
+\qquad
+M_I = \int_a^b \phi_j W^I_i dx\]
+
+We select trial space for V and I to be H1. $S_V$ and $S_I$ have derivative of test function, so to exist test functions shall be in H1 space.\\
+
+In equations 13 and 14 we have $\frac{\partial V}{\partial t}$ and $\frac{\partial I}{\partial t}$ that can each be approximated by $\frac{I_{n+1}-I_n}{\Delta t}$. This is the forward Euler method (explicit Euler method).
+
+\begin{equation}
+W^V_i(b) R_L I(b,t) -  W^V_i(a) V_S(t) + W^V_i(a) R_S I(a,t)	- S_V V_n + L M_V (\frac{I_{n+1}-I_n}{\Delta t}) + R M_V I_n
+	= 0
+\end{equation}
+
+\begin{equation}
+W^I_i(b) I(b,t) - W^I_i(a) I(a,t)
+- S_I I_n + C M_I (\frac{V_{n+1}-V_n}{\Delta t}) + G M_I V_n = 
+	= 0
+\end{equation}
+
+
+Now with $V_{n+1}$ and $I_{n+1}$ on the left side.
+
+\begin{equation}
+	\frac{L}{\Delta t} M_V I_{n+1}
+	 = (\frac{L}{\Delta t} - R) M_V I_n	+ S_V V_n - W^V_i(b) R_L I(b,t) +  W^V_i(a) V_S(t) - W^V_i(a) R_S I(a,t)
+\end{equation}
+
+\begin{equation}
+	\frac{C}{\Delta t} M_I V_{n+1}
+= (\frac{C}{\Delta t} - G) M_I V_n	+ S_I I_n - W^I_i(b) I(b,t) + W^I_i(a) I(a,t)
+= 0
+\end{equation}
+
+Here the block matrix resulting from the system...
+
+
+\begin{equation}
+		\begin{aligned}
+	\begin{bmatrix}
+		\frac{L}{\Delta t} M_V & 0 \\
+		0 & 	\frac{C}{\Delta t}  M_I
+	\end{bmatrix}
+	\begin{bmatrix}
+		I_{n+1}  \\
+		V_{n+1}
+	\end{bmatrix}
+	= \\
+	\begin{bmatrix}
+	 (\frac{L}{\Delta t}- R) M_V - R_L W^V(b) - R_S W^V(a)  & S_V \\
+		S_I + W^I(a) - W^I(b)  & (\frac{C}{\Delta t} - G) M_I
+	\end{bmatrix}
+	\begin{bmatrix}
+		I_n  \\
+	V_n
+	\end{bmatrix}
+	+
+		\begin{bmatrix}
+		  W^V(a) V_S(t) \\
+		0
+	\end{bmatrix}
+		\end{aligned}
+\end{equation}
+
+Where $k1 = \frac{L}{\Delta t},\,\
+	k2 = ,\,\
+	k3 =, \,\
+	k4 = \frac{C}{\Delta t} - G
+$	
+Note that the first and second equation have been swapped to make the lhs matrix diagonal.\\
+
+Note they are not square because the trial and test functions are not the same (not so sure here).\\
+
+\subsection{only $\frac{\partial{I(x,t)}}{\partial{x}}$ equation by part}
+Restart with equation 5 and 6 and apply integration by part on $\frac{\partial{I(x,t)}}{\partial{x}}$ of equation 26. so that no BC will be added for the V equation (25).
+
+
+\begin{equation}
+	\int_a^b\frac{\partial{V(x,t)}}{\partial{x}} W^V_i(x)\,dx
+	+ \int_a^b(L \frac{\partial{I(x,t)}}{\partial{t}} +  R I(x,t)) W^V_i(x)\, dx
+	= 0
+\end{equation}
+
+
+
+\begin{equation}
+	\int_a^b\frac{\partial{I(x,t)}}{\partial{x}} W^I_i(x)\, dx
+	+ \int_a^b(C \frac{\partial{V(x,t)}}{\partial{t}} +  G V(x,t)) W^I_i(x) \, dx
+	= 0
+\end{equation}
+
+Using integration by part on the term $\frac{\partial{I(x,t)}}{\partial{x}}$.
+
+\begin{equation}\int_a^b u(x) v'(x) \, dx = \Big[u(x) v(x)\Big]_a^b - \int_a^b u'(x) v(x) \, dx\end{equation}
+
+The I equation becomes ...
+
+\begin{equation}
+	\Big[W^I_i(x) I(x,t) \Big]_a^b
+	-\int_a^b I(x,t) \frac{\partial{W^I_i(x)}}{\partial{x}}\, dx
+	+ \int_a^b C \frac{\partial{V(x,t)}}{\partial{t}} W^I_i(x)\, dx
+	+  \int_a^b G V(x,t) W^I_i(x)\, dx
+	= 0
+\end{equation}
+
+Then we approximate V and I by summations of possibly different basis function for V $\phi_j$ and I $\psi_j$ as follow:
+
+\begin{equation}
+	V(x, t) = \sum_j V_j(t) \phi_j(x), 
+	\qquad
+	I(x, t) = \sum_j I_j(t) \psi_j(x) 
+\end{equation}
+
+And the time derivatives are:
+
+\begin{equation}
+	\frac{\partial V(x, t)}{\partial t}
+	= \sum_{j} \frac{d V_j(t)}{dt}\,\phi_j(x)
+	\qquad
+	\frac{\partial I(x, t)}{\partial t}
+	= \sum_{j} \frac{d I_j(t)}{dt}\,\psi_j(x)
+\end{equation}
+
+Replacing each of $V(x, t), I(x, t), \frac{\partial V(x, t)}{\partial t}$ and $\frac{\partial I(x, t)}{\partial t}$ in equations 25 and 28 we get...
+
+\begin{equation}
+	\begin{aligned}
+		 \sum_j V_j(t) \int_a^b \frac{\partial{\phi_j(x)}}{\partial{x}}  W^V_i(x) dx \\
+		+ L  \sum_j \frac{\partial{I_j(t)}}{\partial t}    \int_a^b \psi_j(x) W^V_i(x) dx 
+		+  R  \sum_j I_j(t) \int_a^b \psi_j(x) W^V_i(x) dx \\
+		= 0
+	\end{aligned}
+\end{equation}
+
+and equation 28 becomes ...
+
+\begin{equation}
+	\begin{aligned}
+		\Big[W^I_i(x) \sum_j I_j(t) \psi_j(x)  \Big]_a^b
+		- \sum_j I_j(t) 	\int_a^b \psi_j(x) \frac{\partial{W^I_i(x)}}{\partial{x}} \\
+		+ C  \sum_j  \frac{\partial{V_j(t)}}{\partial{t}} \int_a^b \psi_j(x) W^I_i(x) dx
+		+ G  \sum_j V_j(t) \int_a^b \phi_j(x) W^I_i(x) dx\\
+		= 0
+	\end{aligned}
+\end{equation}
+
+So now we have two equations (31) and (32) with unknown $V_j(t)$ and $I_j(t)$.\\
+
+The j span the trial functions (Approximating Functions) and the i span the test functions. The equations can be converted in matrix form....
+
+\begin{equation}
+	S_V V(t) + L M_V \frac{\partial I(t)}{\partial t} + R M_V I(t) = 
+	= 0
+\end{equation}
+
+\begin{equation}
+	B^b I(t) - B^a I(t)
+	- S_I I(t) + C M_I \frac{\partial V(t)}{\partial t} + G M_I V(t) 
+	= 0
+\end{equation}
+
+One more step to include our particular boundaries.
+
+
+\begin{equation}
+	R_S I_a + V_a = V_S
+\end{equation}
+
+The transmission line point b is loaded with a resistor $R_L$.
+
+\begin{equation}
+	V_b - R_L I_b = 0
+\end{equation}
+
+The boundaries constraints are required just in the 2nd equation.
+
+\begin{equation}
+	B^b V(b,t) /R_L - B^a Vs(t) / R_S +  B^a V(a,t) / R_S
+	- S_I I(t) + C M_I \frac{\partial V(t)}{\partial t} + G M_I V(t) = 
+	= 0
+\end{equation}
+
+
+
+
+Where ...
+
+\[S_V = \int_a^b  \frac{\partial \phi_j}{\partial x} W^V_i dx,
+\qquad
+M_V = \int_a^b \psi_j W^V_i dx\]
+
+\[S_I = \int_a^b \psi_j \frac{\partial W^I_i}{\partial x} dx,
+\qquad
+M_I = \int_a^b \phi_j W^I_i dx\]
+
+We select trial space for V and I to be H1; later on we may try with I in L2 space.\\
+
+In equations 13 and 14 we have $\frac{\partial V}{\partial t}$ and $\frac{\partial I}{\partial t}$ that can each be approximated by $\frac{I_{n+1}-I_n}{\Delta t}$. This is the forward Euler method (explicit Euler method).
+
+\begin{equation}
+	S_V V_n + L M_V (\frac{I_{n+1}-I_n}{\Delta t}) + R M_V I_n
+	= 0
+\end{equation}
+
+\begin{equation}
+	B^b V(b,t) /R_L - B^a Vs(t) / R_S +  B^a V(a,t) / R_S
+	- S_I I_n + C M_I (\frac{V_{n+1}-V_n}{\Delta t}) + G M_I V_n = 
+	= 0
+\end{equation}
+
+
+Now with $V_{n+1}$ and $I_{n+1}$ on the left side.
+
+\begin{equation}
+	\frac{L}{\Delta t} M_V I_{n+1}
+	= (\frac{L}{\Delta t} - R) M_V I_n	- S_V V_n
+\end{equation}
+
+\begin{equation}
+	\frac{C}{\Delta t} M_I V_{n+1}
+	= (\frac{C}{\Delta t} - G) M_I V_n	+ S_I I_n - B^b V(b,t) /R_L + B^a Vs(t) / R_S -  B^a V(a,t) / R_S
+	= 0
+\end{equation}
+
+Here the block matrix resulting from the system...
+
+
+\begin{equation}
+	\begin{aligned}
+		\begin{bmatrix}
+			\frac{L}{\Delta t} M_V & 0 \\
+			0 & 	\frac{C}{\Delta t}  M_I
+		\end{bmatrix}
+		\begin{bmatrix}
+			I_{n+1}  \\
+			V_{n+1}
+		\end{bmatrix}
+		= \\
+		\begin{bmatrix}
+			(\frac{L}{\Delta t}- R) M_V  & -S_V \\
+			S_I  & (\frac{C}{\Delta t} - G) M_I -B^b + B^a
+		\end{bmatrix}
+		\begin{bmatrix}
+			I_n  \\
+			V_n
+		\end{bmatrix}
+		+
+		\begin{bmatrix}
+			0 \\
+			B^a V_S(t) / R_S
+		\end{bmatrix}
+	\end{aligned}
+\end{equation}
+
+Where $k1 = \frac{L}{\Delta t},\,\
+k2 = ,\,\
+k3 =, \,\
+k4 = \frac{C}{\Delta t} - G
+$	
+\newpage
+The following four figures show the progression of the gaussian pulse centered at 300ns and 100ns wide. Each image are at 160ns, 240ns, 320ns and 400ns, the first three are ok but the fourth seems to diverge.
+
+Next version will implement backward euler.
+
+\includegraphics{./160ns}\\
+\includegraphics{./240ns}\\
+\includegraphics{./320ns}\\
+\includegraphics{./400ns}
+
+\end{document}
