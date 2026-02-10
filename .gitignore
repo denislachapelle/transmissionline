@@ -1,0 +1,11 @@
+# LaTeX
+*.aux
+*.log
+*.synctex.gz
+*.toc
+*.pdf
+
+# Build artifacts
+out/
+glvis/
+stltfe1d_04
