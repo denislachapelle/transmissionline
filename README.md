@@ -11,5 +11,9 @@ stltfe2d_02.cpp: try with bounadry integrator ...
 
 stltfe1d_03.cpp: return to 1D approach with time stepping, forward euler. stable for little over 300ns.
 
-stltfe1d_04.cpp: return to 1D approach with time stepping, backward euler.
+stltfe1d_04.cpp: return to 1D approach with time stepping, backward euler. see stltfe1d_04.pdf for details.
+
+stltfe1d_05.cpp: use mfem::BackwardEulerSolver instead of custom code. see stltfe1d_05.pdf for details.
+
+
 

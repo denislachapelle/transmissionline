@@ -1,10 +1,12 @@
 //==============================================================================
-//  stltfe1d_04.cpp
+//  stltfe1d_05.cpp
 //==============================================================================
 //
 //  Title
 //  -----
 //  Single Transmission Line Transient finite element Simulation (1D) using MFEM
+//
+// Compare to _04 version this version make use of mfem BackwardEulerSolver class
 //
 //  Description
 //  -----------
@@ -217,7 +219,7 @@ FILE* CreatePlot5x2()
       fprintf(gnuplotPipe, "set ytics nomirror\n"); // don't mirror left ticks to right
       fprintf(gnuplotPipe, "set y2tics\n");         // enable right axis ticks/labels
       fprintf(gnuplotPipe, "set y2tics nomirror\n");// keep right ticks independent
-      //fprintf(gnuplotPipe, "set y2format '%%.3g'\n");// ensure numeric labels show
+      fprintf(gnuplotPipe, "set y2format '%%.3g'\n");// ensure numeric labels show
     }
     return gnuplotPipe;
 }
@@ -338,6 +340,7 @@ private:
    BlockOperator *lhsOp;
    BlockOperator *rhsOp;
    BlockDiagonalPreconditioner *prec;
+   GMRESSolver *solver;
   
 public:
    TelegrapherOperator(FiniteElementSpace *FESpace_)
@@ -366,20 +369,20 @@ public:
       ConstantCoefficient one(1.0), mOne(-1.0);
       
       A11 = new BilinearForm(FESpace);
-      ConstantCoefficient A11Coeff(L/deltaT);
+      ConstantCoefficient A11Coeff(L);
       A11->AddDomainIntegrator(new MassIntegrator(A11Coeff));
       A11->Assemble();
       A11->Finalize();
 
       
       A22 = new BilinearForm(FESpace);
-      ConstantCoefficient A22Coeff(C/deltaT);
+      ConstantCoefficient A22Coeff(C);
       A22->AddDomainIntegrator(new MassIntegrator(A22Coeff));
       A22->Assemble();
       A22->Finalize();
 
       B11 = new BilinearForm(FESpace);
-      ConstantCoefficient B11Coeff(L/deltaT + R);
+      ConstantCoefficient B11Coeff(R);
       B11->AddDomainIntegrator(new MassIntegrator(B11Coeff));
       B11->Assemble();
       B11->Finalize();
@@ -395,7 +398,7 @@ public:
       B21->Finalize();
 
       B22 = new BilinearForm(FESpace);
-      ConstantCoefficient B22Coeff(C/deltaT + G);
+      ConstantCoefficient B22Coeff(G);
       B22->AddDomainIntegrator(new MassIntegrator(B22Coeff));
       ConstantCoefficient oneOverRsCoeff(1.0/Rs);
       ConstantCoefficient oneOverRlCoeff(1.0/Rl);
@@ -416,6 +419,7 @@ public:
       C2->Assemble();
       MyPrintFile(C2, printMatrix, "out/C2.txt");
       
+   
       // 6. Define the BlockStructure of lhs and Matrice.
       blockOffsets = new Array<int>(3);
       (*blockOffsets)[0]=0;
@@ -427,52 +431,59 @@ public:
    // Build the operator, insert each block.
    // row 0 ...
       lhsOp = new BlockOperator(*blockOffsets);
-      lhsOp->SetBlock(0, 0, B11);
-      lhsOp->SetBlock(0, 1, B12);
-      lhsOp->SetBlock(1, 0, B21);
-      lhsOp->SetBlock(1, 1, B22);
+      lhsOp->SetBlock(0, 0, A11, 1.0);
+      lhsOp->SetBlock(1, 1, A22, 1.0);
       MyPrintFile(lhsOp, printMatrix, "out/lhsOp.txt" );
          
    // Build the operator, insert each block.
    // rhsOp->SetBlock(0, 0, DofByOne);
       rhsOp = new BlockOperator(*blockOffsets);
-      rhsOp->SetBlock(0, 0, A11, 1.0);
-      rhsOp->SetBlock(1, 1, A22, 1.0);
+      rhsOp->SetBlock(0, 0, B11);
+      rhsOp->SetBlock(0, 1, B12);
+      rhsOp->SetBlock(1, 0, B21);
+      rhsOp->SetBlock(1, 1, B22);
       MyPrintFile(rhsOp, printMatrix, "out/rhsOp.txt" );
    
       //
       // define the preconditioner.
       //
       prec = new BlockDiagonalPreconditioner(*blockOffsets);
-      prec->SetDiagonalBlock(0, new GSSmoother(B11->SpMat()));
-      prec->SetDiagonalBlock(1, new GSSmoother(B22->SpMat()));
+      prec->SetDiagonalBlock(0, new GSSmoother(A11->SpMat()));
+      prec->SetDiagonalBlock(1, new GSSmoother(A22->SpMat()));
+
+      solver = new GMRESSolver;
+      solver->SetAbsTol(0);
+      solver->SetRelTol(1e-12);
+      solver->SetMaxIter(400);
+      solver->SetPrintLevel(0);
+      solver->SetKDim(30);
+      solver->SetOperator(*lhsOp);
+      solver->SetPreconditioner(*prec);
+      solver->iterative_mode = false;   // force x0 = 0 (ignore contents of k)
    }
 
-   virtual void Mult(const Vector &x, Vector &y) const
+   virtual void ImplicitSolve(const real_t dt, const Vector &x, Vector &k)
    {
       Vector b(x.Size()); b=0.0;
       rhsOp->Mult(x, b);
+      b *= -1.0;
      
       //update LinearForm C2.
-      VsRs->SetTime(GetTime()+deltaT);
-      *C2=0;   //need to be seroed since assemble add-on.
+      VsRs->SetTime(GetTime());
+      *C2=0;   //need to be zeroed since assemble add-on.
       C2->Assemble();
 
       // Slice the second block (starts at nbrDof)
       int nbrDof = FESpace->GetVSize();
       Vector b_V(b, nbrDof, nbrDof);
+      MFEM_ASSERT(C2->Size() == nbrDof, "C2 size mismatch with V block");
       b_V += *C2; // This is the B^a * Vs(t)/Rs term
 
       //solve for y.
-      GMRESSolver solver;
-      solver.SetAbsTol(0);
-      solver.SetRelTol(1e-12);
-      solver.SetMaxIter(400);
-      solver.SetPrintLevel(0);
-      solver.SetKDim(30);
-      solver.SetOperator(*lhsOp);
-      solver.SetPreconditioner(*prec);
-      solver.Mult(b, y);
+      
+      k.SetSize(x.Size());   // or lhsOp->Width()
+      k = 0.0;               // safe initial guess
+      solver->Mult(b, k);
    }
 };
  
@@ -595,6 +606,9 @@ int main(int argc, char *argv[])
    FILE* gnuplotPipe;
    if(vis==2) gnuplotPipe = CreatePlot5x2();
 
+   BackwardEulerSolver solver;
+   solver.Init(*teleOp);
+
    while(1)
    {
       //Save in a Vector for testing SourceFunction.
@@ -603,11 +617,12 @@ int main(int argc, char *argv[])
          sourceFunctionVector[sourceFunctionCounter++] = SourceFunction(Zero, time);  
       }
 
-      teleOp->SetTime(time);
+      //teleOp->SetTime(time);
       
-      Vector xnew(x.Size()); xnew=0.0;
-      teleOp->Mult(x, xnew);
-      x = xnew;  
+      real_t dt = deltaT;
+      solver.Step(x, time,  dt);
+
+
 
       if(time/plotTimeInterval > 1.0*plotCount)
       {
@@ -639,7 +654,7 @@ int main(int argc, char *argv[])
          }
       }
       
-      time += deltaT;
+      //time += deltaT;
       }
 
         if(vis==2) ClosePlot5x2(gnuplotPipe);

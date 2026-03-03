@@ -186,12 +186,12 @@ public:
          LFVS->Assemble();
       
          {
-            std::ofstream out("out/LFVS.txt");
+            std::ofstream out("../out/LFVS.txt");
             LFVS->Print(out, 10);
          }
 
          {
-            std::ofstream out("out/LFVA.txt");
+            std::ofstream out("../out/LFVA.txt");
             LFVA->Print(out, 10);
          }
       }
@@ -203,7 +203,7 @@ public:
       (*lhsRowBlockOffset)[2]=smM_IV->Height(); 
       lhsRowBlockOffset->PartialSum();
       {
-         std::ofstream out("out/lhsRowBlockOffset.txt");
+         std::ofstream out("../out/lhsRowBlockOffset.txt");
          lhsRowBlockOffset->Print(out, 10);
       }
 
@@ -213,7 +213,7 @@ public:
       (*lhsColBlockOffset)[2]=smM_IV->Width(); 
       lhsColBlockOffset->PartialSum();
       {
-         std::ofstream out("out/lhsColBlockOffset.txt");
+         std::ofstream out("../out/lhsColBlockOffset.txt");
          lhsColBlockOffset->Print(out, 10);
       }
    
@@ -226,7 +226,7 @@ public:
       lhsOp->SetBlock(1, 1, smM_IV, L);
 
       {
-      std::ofstream out("out/lhsOp.txt");
+      std::ofstream out("../out/lhsOp.txt");
       if(printMatrix) lhsOp->PrintMatlab(out);
       }
 
@@ -237,7 +237,7 @@ public:
       (*rhsRowBlockOffset)[2]=smS_V->Height(); 
       rhsRowBlockOffset->PartialSum();
       {
-         std::ofstream out("out/rhsRowBlockOffset.txt");
+         std::ofstream out("../out/rhsRowBlockOffset.txt");
          rhsRowBlockOffset->Print(out, 10);
       }
 
@@ -247,7 +247,7 @@ public:
       (*rhsColBlockOffset)[2]=smS_I->Width(); 
       rhsColBlockOffset->PartialSum();
       {
-         std::ofstream out("out/rhsColBlockOffset.txt");
+         std::ofstream out("../out/rhsColBlockOffset.txt");
          rhsColBlockOffset->Print(out, 10);
       }
 
@@ -261,7 +261,7 @@ public:
       rhsOp->SetBlock(1, 1, smM_IV, -R);
 
       {
-      std::ofstream out("out/rhsOp1.txt");
+      std::ofstream out("../out/rhsOp1.txt");
       if(printMatrix) rhsOp->PrintMatlab(out);
       }
 
@@ -280,7 +280,7 @@ public:
          }
 
          {
-         std::ofstream out("out/rhsOp2.txt");
+         std::ofstream out("../out/rhsOp2.txt");
          if(printMatrix) rhsOp->PrintMatlab(out);
          }  
       }
@@ -305,12 +305,12 @@ prec->SetDiagonalBlock(1, new GSSmoother(*smM_IV));
       rhsOp->Mult(x, b);
 
       {
-         std::ofstream out("out/xrhs.txt");
+         std::ofstream out("../out/xrhs.txt");
          if(printMatrix) x.Print(out, 1);
       }  
 
       {
-         std::ofstream out("out/brhs.txt");
+         std::ofstream out("../out/brhs.txt");
          if(printMatrix) b.Print(out, 1);
       }  
 
@@ -432,7 +432,7 @@ TransmissionLineTransient::TransmissionLineTransient()
 
 int TransmissionLineTransient::CleanOutDir()
 {
-    system("rm -f out/*");
+    system("rm -f ../out/*");
     return 1;
 }
 
@@ -481,7 +481,7 @@ int TransmissionLineTransient::LoadMeshFile()
    nbrel = mesh->GetNE();
 
    {
-      std::ofstream out("out/meshprint.txt");
+      std::ofstream out("../out/meshprint.txt");
       if(printMatrix) mesh->Print(out);
    }
    
@@ -575,7 +575,7 @@ int TransmissionLineTransient::TimeSteps()
    } 
 
    {
-      std::ofstream out("out/sourcefunction.txt");
+      std::ofstream out("../out/sourcefunction.txt");
       if(printMatrix) sourceFunctionVector.Print(out, 1);
    }
    
